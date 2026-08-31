@@ -1,7 +1,11 @@
 import { defineConfig } from "vite";
 import glsl from "vite-plugin-glsl";
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  // GitHub Pages serves this repo under /threejs-ocean/, so built asset URLs
+  // need that prefix. The dev server stays at the root: the screenshot
+  // workflow targets http://localhost:3000 directly.
+  base: command === "build" ? "/threejs-ocean/" : "/",
   // Port 3000 is pinned because the playwright-cli screenshot workflow targets
   // http://localhost:3000; strictPort keeps a stray dev server from silently
   // shifting the port and screenshotting nothing.
@@ -22,4 +26,4 @@ export default defineConfig({
       minify: false,
     }),
   ],
-});
+}));
