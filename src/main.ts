@@ -9,6 +9,7 @@ import { createWaterMedium } from "./ocean/underwater/water.js";
 import { submersion, type Submersion } from "./ocean/underwater/state.js";
 import { underwaterEnabled, underwaterDebug, createUnderwater } from "./ocean/underwater/index.js";
 import { createHeightProbe, type HeightProbe } from "./ocean/underwater/height-probe.js";
+import { seabedEnabled, buildSeabed } from "./seabed/index.js";
 import { raysStrength, createGodRays } from "./render/godrays.js";
 import { bloomStrength, createPostPipeline } from "./render/post.js";
 import { runSteps, type Step, type StepTiming } from "./loading/loader.js";
@@ -20,6 +21,7 @@ import type { PostPipeline } from "./render/post.js";
 import type { SkyRig } from "./sky/index.js";
 import type { WaterMedium } from "./ocean/underwater/water.js";
 import type { UnderwaterRig } from "./ocean/underwater/index.js";
+import type { SeabedRig } from "./seabed/index.js";
 import type { DemoHandle } from "./core/demo-handle.js";
 
 const canvas = document.getElementById("scene") as HTMLCanvasElement | null;
@@ -110,6 +112,7 @@ let capture: SceneCapture | null = null;
 let water: WaterMedium | null = null;
 let underwater: UnderwaterRig | null = null;
 let heightProbe: HeightProbe | null = null;
+let seabed: SeabedRig | null = null;
 // Published on the demo handle so tooling can place a shot at the waterline.
 let lastSubmersion: Submersion | null = null;
 let knot!: THREE.Mesh<THREE.TorusKnotGeometry, THREE.MeshStandardMaterial>;
@@ -157,6 +160,7 @@ function frame(dt: number, t: number) {
     ocean.mesh.position.x = camera.position.x;
     ocean.mesh.position.z = camera.position.z;
   }
+  if (seabed) seabed.update(camera.position);
 
   // Slow wind drift + evolution of the cloud field.
   if (cloudRig) cloudRig.uniforms.uTime.value = t;
@@ -240,6 +244,7 @@ function disposeDemo() {
   renderer.setAnimationLoop(null);
   window.removeEventListener("resize", onResize);
   cloudRig?.dispose();
+  seabed?.dispose();
   underwater?.dispose();
   post.dispose();
   renderer.dispose();
@@ -292,7 +297,8 @@ const WARM_DT = 1 / 60;
 // matters is that the 128³ cloud bake, which is most of the wait, gets most of
 // the bar. `?loading=debug` prints the run's real timings to re-tune these.
 const COST_MS = {
-  post: 20, sky: 5, clouds: 3600, godRays: 5, ocean: 700, water: 1, underwater: 5,
+  post: 20, sky: 5, clouds: 3600, godRays: 5, ocean: 700,
+  water: 1, underwater: 5, seabed: 420,
   // Shader compilation swings from ~12 ms (driver cache warm) to ~220 ms cold.
   capture: 5, knot: 10, compile: 120, warm: 200,
   // Savings when the corresponding flag turns a sub-bake off.
@@ -344,6 +350,13 @@ async function boot(): Promise<DemoHandle> {
     steps.push(sync("Reflection capture", COST_MS.capture, () =>
       createSceneCapture(renderer, camera, ocean!, cloudPass, post.taa)));
     if (underwaterEnabled()) {
+      if (seabedEnabled()) {
+        steps.push({
+          label: "Seabed",
+          weight: COST_MS.seabed,
+          bake: () => buildSeabed(scene, renderer, { taa: post.taa, water: water!.uniforms }),
+        });
+      }
       steps.push(sync("Underwater", COST_MS.underwater, () => {
         heightProbe = createHeightProbe(renderer, ocean!);
         return createUnderwater(renderer, camera, ocean!, water!, { taa: post.taa });
@@ -385,6 +398,7 @@ async function boot(): Promise<DemoHandle> {
         case "Water body": water = value as WaterMedium; break;
         case "Ocean": ocean = value as OceanRig; break;
         case "Reflection capture": capture = value as SceneCapture; break;
+        case "Seabed": seabed = value as SeabedRig; break;
         case "Underwater": underwater = value as UnderwaterRig; break;
       }
     },

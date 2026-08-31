@@ -23,7 +23,8 @@
   uniform vec3 uCameraPosition;
   uniform float uCameraNear;
   uniform float uCameraFar;
-  /** 1 when the camera itself is under the surface, from the CPU swell. */
+  /** 1 when the camera itself is under the surface, per the height probe. */
+  uniform float uCameraSubmerged;
   /** Camera height above the water surface, signed; negative when under. */
   uniform float uMeniscusHeight;
 
@@ -41,16 +42,14 @@
    * Is the ray leaving this pixel travelling through water?
    *
    * A surface met from below puts the camera in the water on that ray, one
-   * met from above puts it in the air. Where the ray misses the ocean
-   * entirely the answer is still geometric rather than a guess: the disc
-   * follows the camera out to 380 m, so from above the water every
-   * downward ray lands on it, and a downward ray that misses can only mean
-   * the surface is overhead. (The exception is the fraction of a degree
-   * right at the horizon where a grazing ray outruns the disc -- which is
-   * also where the ocean's own fog has already faded to sky.)
+   * met from above puts it in the air. Rays that miss the ocean disc
+   * entirely -- the ones that outrun its 380 m rim within a degree of the
+   * horizon, and every downward ray once the camera is submerged -- fall
+   * back to where the camera itself is, which the height probe reads off
+   * the FFT rather than estimating.
    */
-  bool maskWet(vec4 m, float dirY) {
-    return m.b > 0.5 ? m.r < 0.5 : dirY < 0.0;
+  bool maskWet(vec4 m) {
+    return m.b > 0.5 ? m.r < 0.5 : uCameraSubmerged > 0.5;
   }
 
   #ifdef WATER_MENISCUS
@@ -103,7 +102,7 @@
     // never drawn there is nothing to go on, so the CPU state stands in.
     vec4 mask = texture2D(tMask, vUv);
     bool hit = mask.b > 0.5;
-    bool maskW = maskWet(mask, dir.y);
+    bool maskW = maskWet(mask);
     bool wet = maskW;
 
     // The waterline on the port, as a ray direction (see meniscusPort).

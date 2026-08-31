@@ -156,7 +156,10 @@ export function oceanSize() {
 // (where detail matters) and falls off toward the fog-obscured horizon. The
 // mesh is never rotated and snaps to the camera XZ every frame, while the
 // wave sampling stays world-anchored.
-function* bakeDiscGeometry(
+//
+// Exported because the seabed wants exactly the same shape for exactly the
+// same reasons -- it is the other camera-following horizontal sheet.
+export function* bakeDiscGeometry(
   rings: number,
   sectors: number,
   rMin: number,

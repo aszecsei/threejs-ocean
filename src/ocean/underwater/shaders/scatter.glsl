@@ -66,6 +66,14 @@
     return uWaterSigmaS * waterDownwelling(originDepth) * integral / (4.0 * WATER_PI);
   }
 
+  #ifndef WATER_CAUSTICS
+  /**
+   * Caustic intensity at a point, with no caustic map: unit everywhere, so
+   * callers multiply by it unconditionally and never carry a branch.
+   */
+  float waterCaustic(vec3 p, float depth) { return 1.0; }
+  #endif
+
   #ifdef WATER_SHAFTS
   /**
    * Single scattering of direct sunlight, marched. This is the term that
