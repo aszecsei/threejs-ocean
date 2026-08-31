@@ -5,6 +5,7 @@ import { createOceanDetailTexture } from "./ocean-textures.js";
 import { TAA_FRAGMENT_GLSL, taaMaterialConfig, type TaaApi } from "./taa.js";
 import type { CloudPass } from "./clouds.js";
 import type { Uniform } from "./core/types.js";
+import * as flags from "./flags.js";
 
 // --- Stylized FFT ocean -----------------------------------------------------
 // Distance-graded radial disc (dense verts near the camera, sparse to the
@@ -112,31 +113,19 @@ export const OCEAN_LAYER = 1;
 
 // Toggle via `?ocean=0` / `?ocean=1` (default: on). Resolution override via
 // `?ocean-n=128|256|512` (power of two; lower it for software rasterizers).
-export function oceanEnabled() {
-  const q = new URLSearchParams(window.location.search).get("ocean");
-  if (q === null) return true;
-  return q !== "0" && q !== "false";
-}
+export function oceanEnabled() { return flags.enabled("ocean"); }
 
 // `?detail=0` drops the procedural detail texture (flat FFT normals + plain
 // foam blob) for A/B comparison.
-export function oceanDetailEnabled() {
-  const q = new URLSearchParams(window.location.search).get("detail");
-  if (q === null) return true;
-  return q !== "0" && q !== "false";
-}
+export function oceanDetailEnabled() { return flags.enabled("detail"); }
 
 // `?contact=0` drops the contact foam around the knot for A/B comparison.
-export function oceanContactEnabled() {
-  const q = new URLSearchParams(window.location.search).get("contact");
-  if (q === null) return true;
-  return q !== "0" && q !== "false";
-}
+export function oceanContactEnabled() { return flags.enabled("contact"); }
 
 // `?cascade2=0` drops the fine FFT cascade (A/B for the second cascade).
 export function oceanCascade2Enabled() {
-  const q = new URLSearchParams(window.location.search).get("cascade2");
-  return q !== "0";
+  // Note: unlike the other toggles this one accepts only "0", not "false".
+  return !flags.is("cascade2", "0");
 }
 
 // `?ssr=0` drops screen-space reflections entirely; `?ssr=full` marches every
@@ -145,17 +134,13 @@ export function oceanCascade2Enabled() {
 // knot is the only geometry in the capture depth buffer, so everything else
 // already resolves through the sky/cloud direction fallback.
 export function ssrMode() {
-  const q = new URLSearchParams(window.location.search).get("ssr");
-  if (q === "0" || q === "false") return "off";
-  if (q === "full") return "full";
-  return "gate";
+  if (!flags.enabled("ssr")) return "off";
+  return flags.is("ssr", "full") ? "full" : "gate";
 }
 
 export function oceanSize() {
-  const q = new URLSearchParams(window.location.search).get("ocean-n");
-  const n = parseInt(q ?? "", 10);
-  if ([128, 256, 512].includes(n)) return n;
-  return 256;
+  const n = flags.int("ocean-n", 256);
+  return [128, 256, 512].includes(n) ? n : 256;
 }
 
 // --- Geometry: exponential radial disc --------------------------------------

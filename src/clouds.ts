@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { SKY_COLOR_GLSL } from "./sky.js";
 import { TAA_FRAGMENT_GLSL, taaMaterialConfig, type TaaApi } from "./taa.js";
 import type { Uniform } from "./core/types.js";
+import * as flags from "./flags.js";
 import { createBlueNoiseTexture, createCirrusNoiseTexture, createCloudNoiseTextures, createCurlNoiseTexture } from "./cloud-noise.js";
 import { CLOUD_CIRRUS_GLSL, CLOUD_DENSITY_GLSL } from "./cloud-density.glsl.js";
 import { cloudTemporalMode, createCloudTemporal, type CloudTemporal } from "./cloud-temporal.js";
@@ -12,55 +13,47 @@ export const CLOUD_BOTTOM = 5.0 * CLOUD_SCALE;
 export const CLOUD_TOP = 15.0 * CLOUD_SCALE;
 export const TOWER_TOP = 33.0 * CLOUD_SCALE;
 
-function query(name: string, fallback: string): string;
-function query(name: string, fallback: null): string | null;
-function query(name: string, fallback: string | null): string | null {
-  const value = new URLSearchParams(window.location.search).get(name);
-  return value === null ? fallback : value;
-}
-function flagEnabled(name: string): boolean {
-  const value = query(name, null);
-  return value === null || (value !== "0" && value !== "false");
-}
-export function cloudsEnabled() { return flagEnabled("clouds"); }
+export function cloudsEnabled() { return flags.enabled("clouds"); }
 export function cloudResDivisor() {
-  const n = parseInt(query("cloud-res", "2"), 10);
-  return Number.isFinite(n) && n >= 0 ? Math.min(n, 8) : 2;
+  // A negative divisor falls back to the default rather than clamping to 0,
+  // because 0 means something else here (render the dome in-scene).
+  const n = flags.int("cloud-res", 2);
+  return n >= 0 ? Math.min(n, 8) : 2;
 }
-export function cloudLightReuse() { return flagEnabled("cloud-light"); }
-export function cloudFarGrowth() {
-  const n = Number(query("cloud-far", "1"));
-  return Number.isFinite(n) ? Math.max(0, n) : 1;
-}
+export function cloudLightReuse() { return flags.enabled("cloud-light"); }
+export function cloudFarGrowth() { return flags.num("cloud-far", 1, { min: 0 }); }
 // Mid-frequency shape band (?cloud-midband=0 disables, or a 0-2 strength
 // multiplier). Fills the feature-size gap between the base billows and the
 // detail erosion; on by default.
 export function cloudMidBand() {
-  const v = query("cloud-midband", "1");
+  // A bare `?cloud-midband` (or `=true`) means full strength; anything
+  // unparseable means off, unlike the clamp-to-default flags elsewhere.
+  const v = flags.str("cloud-midband", "1");
   if (v === "" || v === "true") return 1;
   const n = Number(v);
   return Number.isFinite(n) ? Math.max(0, Math.min(2, n)) : 0;
 }
 
 // High-altitude 2.5-D cirrus layer (?cirrus=0 compiles it out entirely).
-export function cirrusEnabled() { return flagEnabled("cirrus"); }
+export function cirrusEnabled() { return flags.enabled("cirrus"); }
 function cirrusParam(name: string, fallback: number): number {
-  const n = Number(query(name, String(fallback)));
-  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : fallback;
+  return flags.num(name, fallback, { min: 0, max: 1 });
 }
 function cirrusCoverage() { return cirrusParam("cirrus-coverage", 0.40); }
 function cirrusType() { return cirrusParam("cirrus-type", 0.25); }
 
 const DEBUG_MODES = ["", "profile", "coverage", "type", "base-noise", "detail-noise", "coarse-density", "cloud-depth", "cloud-reactive", "shadow", "ambient", "history", "cirrus-coverage", "cirrus-density"];
 function debugMode() {
-  const mode = query("cloud-debug", "");
+  const mode = flags.str("cloud-debug", "");
+  // "ambient-only" is a legacy alias for the "ambient" view.
   if (mode === "ambient-only") return DEBUG_MODES.indexOf("ambient");
+  // An unknown mode falls back to 0 ("" = off) rather than -1.
   return Math.max(0, DEBUG_MODES.indexOf(mode));
 }
-function profileMode() { return query("cloud-profile", "dimensional") === "legacy" ? "legacy" : "dimensional"; }
-function weatherMode() { return query("cloud-weather", "split") === "coupled" ? "coupled" : "split"; }
-function noiseMode() { return query("cloud-noise", "texture") === "procedural" ? "procedural" : "texture"; }
-function ambientMode() { return query("cloud-ambient", "coarse") === "legacy" ? "legacy" : "coarse"; }
+function profileMode() { return flags.is("cloud-profile", "legacy") ? "legacy" : "dimensional"; }
+function weatherMode() { return flags.is("cloud-weather", "coupled") ? "coupled" : "split"; }
+function noiseMode() { return flags.is("cloud-noise", "procedural") ? "procedural" : "texture"; }
+function ambientMode() { return flags.is("cloud-ambient", "legacy") ? "legacy" : "coarse"; }
 
 export function createClouds(
   scene: THREE.Scene,

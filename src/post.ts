@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import * as flags from "./flags.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { createTemporalAA } from "./taa.js";
@@ -21,11 +22,8 @@ export const POST_DEFAULTS = {
 };
 
 export function bloomStrength() {
-  const q = new URLSearchParams(window.location.search).get("bloom");
-  if (q === null) return 1;
-  if (q === "false") return 0;
-  const k = Number(q);
-  return Number.isFinite(k) ? Math.max(0, k) : 1;
+  if (flags.is("bloom", "false")) return 0;
+  return flags.num("bloom", 1, { min: 0 });
 }
 
 export interface PostPipelineOptions {

@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import * as flags from "./flags.js";
 import { TAA_FRAGMENT_GLSL, taaMaterialConfig, type TaaHandle } from "./taa.js";
 import type { Uniform } from "./core/types.js";
 
@@ -19,16 +20,13 @@ import type { Uniform } from "./core/types.js";
 // `?rays=0` disables the effect, `?rays=<k>` scales its strength (default 1),
 // `?rays=debug` shows the blurred occlusion mask instead of compositing it.
 export function raysStrength() {
-  const q = new URLSearchParams(window.location.search).get("rays");
-  if (q === null) return 1;
-  if (q === "false") return 0;
-  if (q === "debug") return 1;
-  const k = Number(q);
-  return Number.isFinite(k) ? Math.max(0, k) : 1;
+  if (flags.is("rays", "false")) return 0;
+  if (flags.is("rays", "debug")) return 1;
+  return flags.num("rays", 1, { min: 0 });
 }
 
 export function raysDebug() {
-  return new URLSearchParams(window.location.search).get("rays") === "debug";
+  return flags.is("rays", "debug");
 }
 
 export const MASK_LAYER = 2;

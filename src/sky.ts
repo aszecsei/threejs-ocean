@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import * as flags from "./flags.js";
 import { TAA_FRAGMENT_GLSL, taaMaterialConfig, type TaaHandle } from "./taa.js";
 
 // --- Sky palette ----------------------------------------------------------
@@ -56,7 +57,7 @@ const DEFAULT_ELEVATION = THREE.MathUtils.radToDeg(Math.asin(DEFAULT_SUN.y));
 const DEFAULT_AZIMUTH = THREE.MathUtils.radToDeg(Math.atan2(DEFAULT_SUN.x, -DEFAULT_SUN.z));
 
 export function sunAngles() {
-  const q = new URLSearchParams(window.location.search).get("sun");
+  const q = flags.raw("sun");
   let elevation = DEFAULT_ELEVATION;
   let azimuth = DEFAULT_AZIMUTH;
   if (q !== null) {
@@ -81,9 +82,7 @@ export function makeSunDirection() {
 // `?sky-lut=0` falls back to evaluating the grade reference sky per pixel
 // instead of the baked 1D LUT (A/B check; see createGradeLUT).
 export function skyLutEnabled() {
-  const q = new URLSearchParams(window.location.search).get("sky-lut");
-  if (q === null) return true;
-  return q !== "0" && q !== "false";
+  return flags.enabled("sky-lut");
 }
 
 // --- Scattering constants --------------------------------------------------

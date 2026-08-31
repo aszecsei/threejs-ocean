@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import * as flags from "./flags.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { SKY_PALETTE, makeSunDirection, createSky, deriveSceneColors } from "./sky.js";
 import { cloudsEnabled, createClouds } from "./clouds.js";
@@ -16,9 +17,9 @@ if (!canvas) throw new Error("#scene canvas is missing from the document");
 // `?dpr=<x>` overrides the device pixel ratio (diagnostic lever for perf
 // attribution, e.g. `?dpr=1`; not a quality setting -- never a default).
 function pixelRatio() {
-  const q = new URLSearchParams(window.location.search).get("dpr");
-  const k = Number(q);
-  if (q !== null && Number.isFinite(k) && k > 0) return k;
+  // Any positive value wins; 0 and garbage fall back to the capped default.
+  const k = flags.num("dpr", 0);
+  if (k > 0) return k;
   return Math.min(window.devicePixelRatio, 2);
 }
 

@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import * as flags from "./flags.js";
 
 /** Cloud temporal-reprojection mode; "off" when the GPU cannot support it. */
 export type CloudTemporalMode = "off" | "interleaved" | "full";
@@ -9,8 +10,7 @@ const QUAD_VERT = /* glsl */ `
 `;
 
 export function cloudTemporalMode(renderer: THREE.WebGLRenderer | null | undefined): CloudTemporalMode {
-  const q = new URLSearchParams(window.location.search).get("cloud-temporal");
-  if (q === "0" || q === "false") return "off";
+  if (!flags.enabled("cloud-temporal")) return "off";
   if (!renderer) return "off";
   // isWebGL2 is checked below; getContext() is typed as the WebGL1|WebGL2
   // union, so narrow it to reach the WebGL2-only parameters.
@@ -21,14 +21,13 @@ export function cloudTemporalMode(renderer: THREE.WebGLRenderer | null | undefin
   if (!supported) return "off";
   // Full updates are the quality default. Interleaving remains an explicit
   // performance mode until its sparse reconstruction matches this image.
-  return q === "interleaved" ? "interleaved" : "full";
+  return flags.is("cloud-temporal", "interleaved") ? "interleaved" : "full";
 }
 
 export function cloudBlurPasses() {
-  const q = new URLSearchParams(window.location.search).get("cloud-blur");
-  if (q === null) return 2;
-  const n = parseInt(q, 10);
-  return Number.isFinite(n) && n >= 0 ? Math.min(n, 4) : 2;
+  // A negative pass count falls back to the default rather than clamping.
+  const n = flags.int("cloud-blur", 2);
+  return n >= 0 ? Math.min(n, 4) : 2;
 }
 
 export function createCloudTemporal(

@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import * as flags from "./flags.js";
 import { CLOUD_DENSITY_GLSL } from "./cloud-density.glsl.js";
 import { TAA_FRAGMENT_GLSL, taaMaterialConfig, type TaaHandle } from "./taa.js";
 import type { Defines, Uniform } from "./core/types.js";
@@ -13,10 +14,8 @@ const QUAD_VERT = /* glsl */ `varying vec2 vUv;void main(){vUv=uv;gl_Position=ve
 export type CloudShadowMode = "off" | "on" | "debug";
 
 export function cloudShadowMode(): CloudShadowMode {
-  const params = new URLSearchParams(window.location.search);
-  const q = params.get("cloud-shadows");
-  if (q === "0" || q === "false") return "off";
-  return q === "debug" || params.get("cloud-debug") === "shadow" ? "debug" : "on";
+  if (!flags.enabled("cloud-shadows")) return "off";
+  return flags.is("cloud-shadows", "debug") || flags.is("cloud-debug", "shadow") ? "debug" : "on";
 }
 
 export function createCloudShadows(

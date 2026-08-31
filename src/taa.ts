@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import * as flags from "./flags.js";
 import type { TaaMaterialConfig, Uniform } from "./core/types.js";
 
 // Full-image temporal AA. The current frame uses two MRT attachments:
@@ -64,10 +65,8 @@ interface TaaTracker {
 }
 
 export function taaQueryMode(): TaaMode {
-  const q = new URLSearchParams(window.location.search).get("taa");
-  if (q === "0" || q === "false") return "off";
-  if (q === "velocity" || q === "history" || q === "reactive") return q;
-  return "on";
+  if (!flags.enabled("taa")) return "off";
+  return flags.oneOf("taa", ["velocity", "history", "reactive"] as const, "on");
 }
 
 export function taaMaterialConfig(taa: TaaHandle | null | undefined): TaaMaterialConfig {
