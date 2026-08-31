@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>three.js demo</title>
+  <style>
+    :root { color-scheme: light; }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #4fa0d9; /* matches the sky horizon color */
+    }
+
+    /* Canvas fills the window; three.js manages its pixel size. */
+    #scene {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      touch-action: none; /* let OrbitControls own touch gestures */
+    }
+
+    /* Minimal HUD overlay */
+    .hud {
+      position: fixed;
+      font: 12px/1.6 ui-monospace, "JetBrains Mono", Consolas, monospace;
+      color: #33566f; /* dark enough to read against the bright sky */
+      user-select: none;
+      pointer-events: none;
+      z-index: 1;
+    }
+    .hud--tl { top: 16px; left: 20px; }
+    .hud--br { bottom: 14px; right: 20px; text-align: right; }
+    .hud strong { color: #16324a; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <canvas id="scene"></canvas>
+
+  <div class="hud hud--tl">
+    <strong>three.js</strong> sky &middot; clouds &middot; FFT ocean<br />
+    drag to orbit &middot; scroll to zoom
+  </div>
+  <div class="hud hud--br" id="hud-stats"></div>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+      }
+    }
+  </script>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>
