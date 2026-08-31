@@ -5,6 +5,10 @@ import { SKY_PALETTE, makeSunDirection, createSky, deriveSceneColors } from "./s
 import { cloudsEnabled, cirrusEnabled, buildClouds } from "./clouds/index.js";
 import { attachCloudShadow } from "./clouds/shadows/index.js";
 import { oceanEnabled, oceanSize, oceanCascade2Enabled, buildOcean, sampleSwell, createSceneCapture } from "./ocean/index.js";
+import { createWaterMedium } from "./ocean/underwater/water.js";
+import { submersion, type Submersion } from "./ocean/underwater/state.js";
+import { underwaterEnabled, underwaterDebug, createUnderwater } from "./ocean/underwater/index.js";
+import { createHeightProbe, type HeightProbe } from "./ocean/underwater/height-probe.js";
 import { raysStrength, createGodRays } from "./render/godrays.js";
 import { bloomStrength, createPostPipeline } from "./render/post.js";
 import { runSteps, type Step, type StepTiming } from "./loading/loader.js";
@@ -14,6 +18,8 @@ import type { OceanRig, SceneCapture } from "./ocean/index.js";
 import type { GodRays } from "./render/godrays.js";
 import type { PostPipeline } from "./render/post.js";
 import type { SkyRig } from "./sky/index.js";
+import type { WaterMedium } from "./ocean/underwater/water.js";
+import type { UnderwaterRig } from "./ocean/underwater/index.js";
 import type { DemoHandle } from "./core/demo-handle.js";
 
 const canvas = document.getElementById("scene") as HTMLCanvasElement | null;
@@ -67,6 +73,22 @@ controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.target.set(0, 0.8, 0);
 
+// `?cam=x,y,z` and `?look=x,y,z` place the camera and its orbit target. There
+// is no polar clamp, so these are how an underwater viewpoint is reached
+// reproducibly -- a screenshot of the water from below has to land on the same
+// place every run to be worth diffing.
+function vec3Flag(name: string): THREE.Vector3 | null {
+  const q = flags.raw(name);
+  if (!q) return null;
+  const parts = q.split(",").map(Number);
+  if (parts.length !== 3 || !parts.every(Number.isFinite)) return null;
+  return new THREE.Vector3(parts[0], parts[1], parts[2]);
+}
+const camFlag = vec3Flag("cam");
+const lookFlag = vec3Flag("look");
+if (camFlag) camera.position.copy(camFlag);
+if (lookFlag) controls.target.copy(lookFlag);
+
 // --- Rigs, built by boot() under the loading screen ----------------------
 // Everything above is microseconds; everything below is the multi-second
 // asset bake the loading screen exists to cover. These are assigned once,
@@ -82,6 +104,14 @@ let grid: THREE.GridHelper | null = null;
 // color+depth target first; the ocean shader marches its reflection rays
 // against that depth buffer. See createSceneCapture in ocean.js.
 let capture: SceneCapture | null = null;
+// The water body, and the passes that grade the frame through it. The medium
+// is built before the ocean because the ocean's own underside branch reads
+// the same uniform objects.
+let water: WaterMedium | null = null;
+let underwater: UnderwaterRig | null = null;
+let heightProbe: HeightProbe | null = null;
+// Published on the demo handle so tooling can place a shot at the waterline.
+let lastSubmersion: Submersion | null = null;
 let knot!: THREE.Mesh<THREE.TorusKnotGeometry, THREE.MeshStandardMaterial>;
 // Bounding-sphere radius for the ocean's SSR march gate (rotation does not
 // change it; a small margin covers filtering slop).
@@ -138,9 +168,22 @@ function frame(dt: number, t: number) {
       knot.position.x, knot.position.y, knot.position.z, knotBoundRadius);
   }
 
+  // Where the camera sits relative to the waterline. The swell approximation
+  // is generous about switching the passes on (see SUBMERSION_MARGIN); the
+  // per-pixel truth comes from the water mask.
+  const dive = submersion(camera.position.x, camera.position.y, camera.position.z, t,
+    heightProbe?.heightAt);
+  lastSubmersion = dive;
+  const diving = underwater !== null && (dive.active || underwaterDebug() !== "off");
+  if (underwater) underwater.update(camera.position.y - dive.waterY, dive.submerged);
+
   // Jitter only the scene render. endFrame() restores the base projection
   // after post-processing and commits camera/object transforms for velocity.
   post.taa.beginFrame(dt, scene);
+
+  // The mask has to be drawn with the same jitter as the frame it will be
+  // sampled against, so it waits for beginFrame.
+  if (diving && underwater) underwater.renderMask(scene);
 
   // March the cloud dome into its low-res buffer first; the capture pass
   // (or the `?ocean=0` branch below) composites it over the sky.
@@ -154,8 +197,15 @@ function frame(dt: number, t: number) {
     if (cloudPass) cloudPass.composite(renderer);
   }
   if (cloudRig?.shadows) cloudRig.shadows.renderDebug(post.frame);
-  if (godRays && cloudRig?.shadows?.mode !== "debug") godRays.render(post.frame);
-  post.finish();
+  // The god-ray mask is the sky and cloud domes seen directly; underwater
+  // they are behind a refracting surface, so the screen-space rays would
+  // smear a sun that is not there. The volumetric shafts replace them.
+  if (godRays && !diving && cloudRig?.shadows?.mode !== "debug") godRays.render(post.frame);
+  // Grade the frame through the water column before it is resolved.
+  const graded = diving && underwater && capture
+    ? underwater.resolve(post.frame, post.scratch, capture.depthTexture)
+    : post.frame;
+  post.finish(graded);
   post.taa.endFrame();
 
   // Cheap FPS readout, updated ~2x per second.
@@ -180,6 +230,7 @@ function onResize() {
   renderer.setSize(w, h);
   post.resize();
   if (capture) capture.resize();
+  if (underwater) underwater.resize();
   if (godRays) godRays.resize();
   if (cloudPass) cloudPass.resize();
   if (cloudRig) cloudRig.reset();
@@ -189,6 +240,7 @@ function disposeDemo() {
   renderer.setAnimationLoop(null);
   window.removeEventListener("resize", onResize);
   cloudRig?.dispose();
+  underwater?.dispose();
   post.dispose();
   renderer.dispose();
 }
@@ -240,7 +292,7 @@ const WARM_DT = 1 / 60;
 // matters is that the 128³ cloud bake, which is most of the wait, gets most of
 // the bar. `?loading=debug` prints the run's real timings to re-tune these.
 const COST_MS = {
-  post: 20, sky: 5, clouds: 3600, godRays: 5, ocean: 700,
+  post: 20, sky: 5, clouds: 3600, godRays: 5, ocean: 700, water: 1, underwater: 5,
   // Shader compilation swings from ~12 ms (driver cache warm) to ~220 ms cold.
   capture: 5, knot: 10, compile: 120, warm: 200,
   // Savings when the corresponding flag turns a sub-bake off.
@@ -259,6 +311,13 @@ async function boot(): Promise<DemoHandle> {
       createPostPipeline(renderer, { bloom: bloomStrength(), camera })),
     sync("Sky dome", COST_MS.sky, () => createSky(scene, sunDir, post.taa)),
   ];
+  if (oceanEnabled() && underwaterEnabled()) {
+    // Free, but it has to land before the ocean: the ocean's underside branch
+    // reads these uniform objects, and the underwater passes read the same
+    // ones, which is what keeps the surface and the volume describing one
+    // body of water.
+    steps.push(sync("Water body", COST_MS.water, () => createWaterMedium(sky.uniforms)));
+  }
   if (cloudsEnabled()) {
     steps.push({
       label: "Cloud noise",
@@ -279,10 +338,17 @@ async function boot(): Promise<DemoHandle> {
         size: oceanSize(),
         taa: post.taa,
         cloudShadow: cloudRig?.shadows?.uniforms ?? null,
+        water: water?.uniforms ?? null,
       }),
     });
     steps.push(sync("Reflection capture", COST_MS.capture, () =>
       createSceneCapture(renderer, camera, ocean!, cloudPass, post.taa)));
+    if (underwaterEnabled()) {
+      steps.push(sync("Underwater", COST_MS.underwater, () => {
+        heightProbe = createHeightProbe(renderer, ocean!);
+        return createUnderwater(renderer, camera, ocean!, water!, { taa: post.taa });
+      }));
+    }
   }
   steps.push(sync("Scene objects", COST_MS.knot, buildSceneObjects));
   steps.push({
@@ -316,8 +382,10 @@ async function boot(): Promise<DemoHandle> {
           cloudPass = cloudRig.pass;
           break;
         case "God rays": godRays = value as GodRays; break;
+        case "Water body": water = value as WaterMedium; break;
         case "Ocean": ocean = value as OceanRig; break;
         case "Reflection capture": capture = value as SceneCapture; break;
+        case "Underwater": underwater = value as UnderwaterRig; break;
       }
     },
   });
@@ -346,6 +414,8 @@ async function boot(): Promise<DemoHandle> {
     get ocean() { return ocean; },
     get capture() { return capture; },
     get godRays() { return godRays; },
+    get underwater() { return underwater; },
+    get submersion() { return lastSubmersion; },
     loading: overlay,
     dispose: disposeDemo,
 

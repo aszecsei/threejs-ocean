@@ -2,6 +2,13 @@
 // final BRDF. skyColor() is injected ahead of this file (see SKY_COLOR_GLSL).
   #include <packing>
 
+  // The medium under the surface. The include is unconditional (it is
+  // resolved before the preprocessor runs) but everything in it compiles away
+  // with UNDERWATER, so the above-water shader is unchanged.
+  #ifdef UNDERWATER
+  #include "../underwater/shaders/scatter.glsl";
+  #endif
+
   // --- Screen-space reflection helpers ------------------------------------
   // Project a world point to screen uv; also returns view-space z (negative
   // in front of the camera) and whether the point is in front of the camera.
@@ -32,6 +39,19 @@
     if (d >= 0.99999) return false; // sky: nothing to hit
     float sz = perspectiveDepthToViewZ(d, uCameraNear, uCameraFar);
     return vz < sz && vz > sz - uSsrThickness;
+  }
+
+  // Radiance arriving from a direction, for content that has no parallax:
+  // if the direction lands on screen where the capture drew sky (and clouds),
+  // that pixel is exact. Used both as the SSR miss path and, underwater, as
+  // the refracted lookup through Snell's window.
+  vec3 sampleDirection(vec3 origin, vec3 dir, vec3 fallback) {
+    float vz; bool ok;
+    vec2 uv = ssrProject(origin + dir * 2000.0, vz, ok);
+    if (ok && ssrOnScreen(uv) && texture2D(uSceneDepth, uv).r >= 0.99999) {
+      return mix(fallback, texture2D(uSceneColor, uv).rgb, ssrEdgeFade(uv));
+    }
+    return fallback;
   }
 
   // Reflected radiance along R from world point origin. Falls back to the
@@ -82,14 +102,8 @@
       return mix(fallback, texture2D(uSceneColor, uv).rgb, ssrEdgeFade(uv));
     }
 
-    // No geometry hit: if the ray direction lands on screen where sky (and
-    // clouds) were drawn, use that pixel -- exact for direction-only content.
-    float vz; bool ok;
-    vec2 fuv = ssrProject(origin + R * 2000.0, vz, ok);
-    if (ok && ssrOnScreen(fuv) && texture2D(uSceneDepth, fuv).r >= 0.99999) {
-      return mix(fallback, texture2D(uSceneColor, fuv).rgb, ssrEdgeFade(fuv));
-    }
-    return fallback;
+    // No geometry hit: fall through to the direction-only lookup.
+    return sampleDirection(origin, R, fallback);
   }
 
   // Bicubic (B-spline) sample of the foam texture via 4 bilinear taps.
@@ -136,6 +150,12 @@
     #endif
   }
 
+  // Needs sampleDirection() and skyColor(), so it lands here rather than
+  // beside the other helpers.
+  #ifdef UNDERWATER
+  #include "./ocean.underside.glsl";
+  #endif
+
   float ggx(vec3 n, vec3 v, vec3 l, float rough) {
     vec3 hv = normalize(v + l);
     float a = max(rough * rough, 1e-4);
@@ -151,8 +171,18 @@
     // Past uFogFar the fog mix below lands on the sky color exactly, so the
     // outermost rings -- horizon micro-triangles with worst-case quad
     // overshading -- skip the whole water shader. Seamless by construction.
+    // Underwater the same rings are past several hundred metres of water, so
+    // the resolve pass multiplies them by ~0 and replaces them with the
+    // volume; black is exactly what it wants to receive.
     if (vDist > uFogFar) {
-      gl_FragColor = vec4(skyColor(viewDir, uSunDirection, uZenithColor, uHorizonColor, uGroundColor, uSunColor), 1.0);
+      #ifdef UNDERWATER
+        vec3 farColor = gl_FrontFacing
+          ? skyColor(viewDir, uSunDirection, uZenithColor, uHorizonColor, uGroundColor, uSunColor)
+          : vec3(0.0);
+      #else
+        vec3 farColor = skyColor(viewDir, uSunDirection, uZenithColor, uHorizonColor, uGroundColor, uSunColor);
+      #endif
+      gl_FragColor = vec4(farColor, 1.0);
       #ifdef TAA_ENABLED
         taaMotion = taaPackMotion(vTaaCurrentClip, vTaaPreviousClip, 0.0);
       #endif
@@ -283,6 +313,23 @@
     nD += nF * uContact.z * contact * sin(gap * 30.0 - uTime * 4.0);
     nD = mix(nD * detailAmp, nF * uFoamBump * uDetailStrength, foamAmount);
     N = normalize(N + vec3(nD.x, 0.0, nD.y));
+    #endif
+
+    #ifdef UNDERWATER
+    // From below, the surface model changes entirely: Snell's window and
+    // total internal reflection replace the sky reflection and the deep-water
+    // body. A back face is by definition a water -> air crossing, so this is
+    // the right test whether or not the camera is submerged.
+    if (!gl_FrontFacing) {
+      gl_FragColor = vec4(oceanUnderside(N, viewDir, foamAmount), 1.0);
+      #ifdef TAA_ENABLED
+        // The window shimmers hard as the surface tilts, and its content has
+        // no motion vector of its own, so shorten the history rather than
+        // smearing the refraction.
+        taaMotion = taaPackMotion(vTaaCurrentClip, vTaaPreviousClip, 0.25);
+      #endif
+      return;
+    }
     #endif
 
     float NdV = max(dot(N, V), 0.0);

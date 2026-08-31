@@ -12,6 +12,8 @@ import type { TaaApi } from "../taa/index.js";
 import type { CloudRig } from "../clouds/index.js";
 import type { OceanRig, SceneCapture } from "../ocean/index.js";
 import type { GodRays } from "../render/godrays.js";
+import type { UnderwaterRig } from "../ocean/underwater/index.js";
+import type { Submersion } from "../ocean/underwater/state.js";
 import type { LoadingOverlay } from "../loading/overlay.js";
 
 export interface DemoHandle {
@@ -27,6 +29,13 @@ export interface DemoHandle {
   readonly ocean: OceanRig | null;
   readonly capture: SceneCapture | null;
   readonly godRays: GodRays | null;
+  readonly underwater: UnderwaterRig | null;
+  /**
+   * Where the camera sat relative to the waterline on the last rendered
+   * frame. Positioning a shot at the surface means matching `waterY`, which
+   * only the FFT knows, so tooling needs to be able to read it back.
+   */
+  readonly submersion: Submersion | null;
 
   /** Assigned once the dispose closure exists. */
   dispose?: () => void;

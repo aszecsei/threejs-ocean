@@ -245,6 +245,15 @@ export interface OceanOptions extends Partial<typeof OCEAN_DEFAULTS> {
   heightRms?: number;
   /** Cloud shadow uniforms, shared by identity with the cloud rig. */
   cloudShadow?: Record<string, Uniform<unknown>> | null;
+  /**
+   * Water medium uniforms, shared by identity with the underwater rig. Their
+   * presence is what turns on the surface's underside branch -- and what
+   * makes the mesh double-sided, since from below every triangle is a back
+   * face and would otherwise be culled.
+   */
+  water?: Record<string, Uniform<unknown>> | null;
+  /** Per-channel refraction through Snell's window. Defaults to on. */
+  dispersion?: boolean;
 }
 
 // The resumable form. The FFT cascades, the 512² detail bake and the ~61k-vert
@@ -374,6 +383,7 @@ export function* buildOcean(
     },
     uInvResolution: { value: new THREE.Vector2(1, 1) },
     ...(opts.cloudShadow ?? {}),
+    ...(opts.water ?? {}),
     ...taaConfig.uniforms,
   };
 
@@ -404,8 +414,13 @@ export function* buildOcean(
         ...(ssrMode() === "off" ? { SSR_DISABLED: "" } : {}),
         ...(skyUniforms.uGradeLUT ? { SKY_GRADE_LUT: "" } : {}),
         ...(opts.cloudShadow ? { CLOUD_SHADOWS: "" } : {}),
+        ...(opts.water ? { UNDERWATER: "" } : {}),
+        ...(opts.water && (opts.dispersion ?? true) ? { OCEAN_DISPERSION: "" } : {}),
         ...taaConfig.defines,
       },
+      // Backface culling is what makes the sea vanish from below, so the
+      // underside branch and DoubleSide arrive together or not at all.
+      side: opts.water ? THREE.DoubleSide : THREE.FrontSide,
     })
   );
   mesh.frustumCulled = false;
@@ -512,6 +527,9 @@ export function createSceneCapture(
 
   return {
     get target() { return target; },
+    // Always present -- makeTarget constructs one -- but three types the field
+    // as nullable, so the assertion lives here rather than at every reader.
+    get depthTexture() { return target.depthTexture!; },
     resize() {
       renderer.getDrawingBufferSize(size);
       target.dispose();

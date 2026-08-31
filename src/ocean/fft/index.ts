@@ -673,6 +673,11 @@ export function* buildOceanFft(
       gpu.compute();
     },
     displacementTexture: () => gpu.getCurrentRenderTarget(combine).texture,
+    // The target behind displacementTexture(), for readback. RGBA is
+    // (dx, height, dz, Jacobian) in FloatType, so one texel of it is the
+    // wave height at a world position -- the only way to learn the real
+    // surface height on the CPU without re-simulating it there.
+    displacementTarget: () => gpu.getCurrentRenderTarget(combine),
     // GPUComputationRenderer ping-pongs every variable. The alternate target
     // is last frame's displacement and can feed ocean motion vectors without
     // another simulation or texture copy.

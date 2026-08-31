@@ -11,7 +11,22 @@ const CAMERA = { pos: [4, 2.6, 6], target: [0, 0.8, 0] };
 const FRAMES = 90; // enough for TAA to converge and the swell to develop
 const DT = 1 / 60;
 
-export default async function captureFrame({ frames = FRAMES, dt = DT } = {}) {
+// `?cam=x,y,z` / `?look=x,y,z` move the pose, and the capture has to honour
+// them or every underwater shot lands back at the default above-water view.
+// Same parse as main.js: three finite comma-separated numbers, or nothing.
+function poseFlag(name, fallback) {
+  const q = new URLSearchParams(window.location.search).get(name);
+  if (!q) return fallback;
+  const parts = q.split(",").map(Number);
+  return parts.length === 3 && parts.every(Number.isFinite) ? parts : fallback;
+}
+
+export default async function captureFrame({
+  frames = FRAMES,
+  dt = DT,
+  pos = poseFlag("cam", CAMERA.pos),
+  target = poseFlag("look", CAMERA.target),
+} = {}) {
   // The scene is built asynchronously behind the loading screen. __demoReady
   // resolves only after that screen has left the DOM, so awaiting it also
   // guarantees the screenshot is of the render alone.
@@ -22,13 +37,13 @@ export default async function captureFrame({ frames = FRAMES, dt = DT } = {}) {
   // Damping integrates over wall-clock time, so it must be off for the pose
   // to be exact rather than merely close.
   d.controls.enableDamping = false;
-  d.camera.position.set(...CAMERA.pos);
-  d.controls.target.set(...CAMERA.target);
+  d.camera.position.set(...pos);
+  d.controls.target.set(...target);
   d.controls.update();
 
   d.pause();
   d.resetTemporal();
   d.stepFrames(frames, dt);
 
-  return { ok: true, frames, dt, t: frames * dt };
+  return { ok: true, frames, dt, t: frames * dt, pos, target };
 }

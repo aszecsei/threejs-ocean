@@ -59,6 +59,13 @@ export function createPostPipeline(
     return target;
   };
   let frame = makeFrame();
+  // A second frame-shaped target for passes that have to read the whole
+  // finished frame and write it back -- the underwater grade is the only one
+  // so far. Same shape (both attachments plus the depth texture) because
+  // taa.resolve reads all three off whatever it is handed.
+  let scratch = makeFrame();
+  scratch.textures[0].name = "Post.scratchColor";
+  if (taa.enabled) scratch.textures[1].name = "Post.scratchMotion";
 
   const bloomPass =
     bloom > 0
@@ -74,19 +81,23 @@ export function createPostPipeline(
 
   return {
     get frame() { return frame; },
+    get scratch() { return scratch; },
     taa,
     bloomPass,
     resize() {
       renderer.getDrawingBufferSize(size);
       frame.dispose();
+      scratch.dispose();
       frame = makeFrame();
+      scratch = makeFrame();
       taa.resize();
       if (bloomPass) bloomPass.setSize(size.x, size.y);
     },
     // Resolve the linear HDR frame first. Bloom works on the disposable TAA
     // display target, never on the pre-bloom temporal history.
-    finish() {
-      const display = taa.enabled ? taa.resolve(frame) : frame;
+    // `source` is `frame` unless a pass has since graded it into `scratch`.
+    finish(source: THREE.WebGLRenderTarget = frame) {
+      const display = taa.enabled ? taa.resolve(source) : source;
       // Diagnostic views show raw motion/history data and deliberately skip
       // bloom, while OutputPass still gives them normal display encoding.
       if (bloomPass && !taa.diagnostic) bloomPass.render(renderer, null!, display, 0, false);
@@ -95,6 +106,7 @@ export function createPostPipeline(
     },
     dispose() {
       frame.dispose();
+      scratch.dispose();
       taa.dispose();
       bloomPass?.dispose();
       outputPass.dispose();
