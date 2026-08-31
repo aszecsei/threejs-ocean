@@ -44,8 +44,9 @@ function collect(out, name, material) {
   });
 }
 
-export default function dumpShaders() {
-  const d = window.__demo;
+export default async function dumpShaders() {
+  // The scene builds asynchronously behind the loading screen.
+  const d = await (window.__demoReady ?? window.__demo);
   if (!d) return { error: "no __demo" };
   const out = {};
 

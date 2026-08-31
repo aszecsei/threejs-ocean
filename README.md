@@ -19,6 +19,7 @@ Each rendering system owns a directory, with its shaders beside it.
 src/
   main.ts                 scene assembly, lights, and the frame loop
   flags.ts                URL query parsing (see Flags below)
+  loading/                the "Generating Assets" screen and its scheduler
   core/
     types.ts              Uniform<T>, Defines, and the shared rig vocabulary
     demo-handle.ts        the window.__demo contract used by scripts/
@@ -37,6 +38,24 @@ src/
 Modules are factory functions returning a "rig" object; there are no classes.
 The rig types are `ReturnType<typeof createX>` aliases, so they cannot drift
 from the factories.
+
+## Startup
+
+Building the scene takes seconds — most of it the 128³/64³ cloud volumes, then
+the FFT cascades and the 512² ocean detail texture. That work happens behind a
+"Generating Assets" screen (markup in `index.html`, driven by `loading/`), which
+splits diagonally and slides away once the scene is built, compiled, and warmed
+up for 45 hidden frames so TAA has converged.
+
+The bakes are written as generators that `yield` a `Progress` partway through
+their loops, so `loading/scheduler.ts` can hand the main thread back and the
+screen stays live. Every one keeps a synchronous wrapper (`createX` calls
+`drain(buildX(...))`), which is what the pure-CPU tests and the rig type aliases
+use — so chunking a bake never changes its signature, its type, or its bytes.
+
+Because construction is now asynchronous, `window.__demo` does not exist at
+module-evaluation time. Tooling must await **`window.__demoReady`**, which
+resolves after the overlay has left the DOM.
 
 ## Shaders
 
@@ -82,6 +101,8 @@ Everything diagnostic is a URL query parameter, read fresh on every call.
 | `?cloud-debug=<mode>` | Cloud debug views (`coverage`, `shadow`, `history`, …) |
 | `?cloud-temporal=0\|interleaved` | Cloud reprojection mode |
 | `?rays=0\|<k>\|debug` | Disable, scale, or inspect the god-ray mask |
+| `?loading=0\|debug` | Skip the loading screen, warm-up and reveal / print the per-step cost table |
+| `?loading-hold=1` | Hold the finished loading screen up until `__demo.loading.finish()` |
 
 Note two intentional quirks, both covered by tests: `?cascade2` accepts only
 `0` (not `false`), and an empty value such as `?bloom=` parses as `0`, not as
@@ -98,9 +119,12 @@ exposes a fixed-step clock to remove that:
 () => import('/scripts/capture-frame.js').then(m => m.default())
 ```
 
-That pauses the loop, clears temporal history and renders 90 frames of exactly
-1/60 s from t = 0. Repeat captures are then bit-identical, which makes a
-screenshot diff a real regression test.
+That awaits `window.__demoReady`, pauses the loop, clears temporal history and
+renders 90 frames of exactly 1/60 s from t = 0. Repeat captures then agree to
+within 1/255 on a handful of samples (measured; the FFT foam accumulator is the
+residue `resetTemporal` does not clear), which makes a screenshot diff a real
+regression test. Awaiting the handle is also what guarantees the loading screen
+is gone from the DOM before the shot is taken.
 
 Two other probes live in `scripts/`:
 

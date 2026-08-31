@@ -3,7 +3,8 @@ import { SKY_COLOR_GLSL } from "../sky/index.js";
 import { taaMaterialConfig, type TaaApi } from "../taa/index.js";
 import type { Uniform } from "../core/types.js";
 import * as flags from "../flags.js";
-import { createBlueNoiseTexture, createCirrusNoiseTexture, createCloudNoiseTextures, createCurlNoiseTexture } from "./noise-textures.js";
+import { bakeBlueNoiseTexture, bakeCirrusNoiseTexture, bakeCloudNoiseTextures, bakeCurlNoiseTexture } from "./noise-textures.js";
+import { band, drain } from "../loading/scheduler.js";
 import CLOUD_DENSITY_GLSL from "./shaders/density.glsl";
 import { cloudTemporalMode, createCloudTemporal, type CloudTemporal } from "./temporal/index.js";
 import { createCloudShadows } from "./shadows/index.js";
@@ -60,7 +61,10 @@ function weatherMode() { return flags.is("cloud-weather", "coupled") ? "coupled"
 function noiseMode() { return flags.is("cloud-noise", "procedural") ? "procedural" : "texture"; }
 function ambientMode() { return flags.is("cloud-ambient", "legacy") ? "legacy" : "coarse"; }
 
-export function createClouds(
+// The resumable form. Its four noise bakes are the bulk of the demo's startup
+// cost, so they are composed into one 0..1 band the loading screen can follow;
+// everything after them is allocation and shader assembly.
+export function* buildClouds(
   scene: THREE.Scene,
   skyUniforms: Record<string, Uniform<unknown>>,
   renderer: THREE.WebGLRenderer,
@@ -68,13 +72,16 @@ export function createClouds(
 ) {
   const divisor = renderer ? cloudResDivisor() : 0;
   const requestedNoise = noiseMode();
-  const noiseResources = requestedNoise === "texture" ? createCloudNoiseTextures(renderer) : null;
+  const noiseResources = requestedNoise === "texture"
+    ? yield* band(bakeCloudNoiseTextures(renderer), "Cloud noise", 0, 0.78)
+    : null;
   const activeNoise = noiseResources ? "texture" : "procedural";
   if (requestedNoise === "texture" && !noiseResources) console.warn("Cloud texture noise unsupported; using procedural noise");
-  const curlNoise = createCurlNoiseTexture();
-  const blueNoise = createBlueNoiseTexture();
+  const curlNoise = yield* band(bakeCurlNoiseTexture(), "Curl noise", 0.78, 0.84);
+  const blueNoise = yield* band(bakeBlueNoiseTexture(), "Blue noise", 0.84, 0.92);
   const cirrusOn = cirrusEnabled();
-  const cirrusNoise = cirrusOn ? createCirrusNoiseTexture() : null;
+  const cirrusNoise = cirrusOn ? yield* band(bakeCirrusNoiseTexture(), "Cirrus noise", 0.92, 0.99) : null;
+  yield { label: "Cloud materials", detail: "assembling shaders", fraction: 0.99 };
   const temporalMode = divisor > 0 ? cloudTemporalMode(renderer) : "off";
   const taaConfig = taaMaterialConfig(taa);
   const ownCurrentVP = new THREE.Matrix4();
@@ -250,6 +257,16 @@ export function createClouds(
   pass.resize();
   const rig={mesh,uniforms,pass,shadows,noise:noiseResources,modes:{profile:profileMode(),weather:weatherMode(),noise:activeNoise,temporal:temporalMode,ambient:ambientMode(),cirrus:cirrusOn,shadows:shadows?.mode??"off",debug:DEBUG_MODES[debugMode()]},reset(){pass.reset();shadows?.reset();taa?.reset();},dispose(){pass.dispose();shadows?.dispose();noiseResources?.dispose();curlNoise.dispose();cirrusNoise?.dispose();mesh.geometry.dispose();mesh.material.dispose();}};
   return rig;
+}
+
+/** Builds the cloud rig in one blocking task. See {@link buildClouds}. */
+export function createClouds(
+  scene: THREE.Scene,
+  skyUniforms: Record<string, Uniform<unknown>>,
+  renderer: THREE.WebGLRenderer,
+  taa: TaaApi | null = null
+) {
+  return drain(buildClouds(scene, skyUniforms, renderer, taa));
 }
 
 /** The cloud rig returned by {@link createClouds}. */

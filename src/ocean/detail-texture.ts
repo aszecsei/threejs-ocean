@@ -1,4 +1,8 @@
 import * as THREE from "three";
+import { drain } from "../loading/scheduler.js";
+import type { Bake } from "../loading/types.js";
+
+const LABEL = "Ocean detail texture";
 
 // --- Procedural ocean detail texture ----------------------------------------
 // One tiling RGBA texture baked once on the CPU, mip-mapped so it filters
@@ -107,11 +111,11 @@ export interface OceanDetailOptions {
   octaves?: number;
 }
 
-export function createOceanDetailTexture(
+export function* bakeOceanDetailTexture(
   renderer: THREE.WebGLRenderer,
   size = 512,
   opts: OceanDetailOptions = {}
-): THREE.DataTexture {
+): Bake<THREE.DataTexture> {
   const { fold = 0, gain = 0.5, octaves = 5 } = opts;
   const N = size;
   const height = new Float32Array(N * N);
@@ -142,6 +146,9 @@ export function createOceanDetailTexture(
       const grain = 0.5 + 0.5 * fbm(u, v, 32, 2, 91);
       bubbles[k] = clamp01(0.65 * edge + 0.35 * grain);
     }
+    // The scalar-field pass is ~90% of this bake; the normalization, slope and
+    // pack passes below are single cheap sweeps.
+    yield { label: LABEL, detail: `row ${j + 1}/${N}`, fraction: 0.9 * ((j + 1) / N) };
   }
 
   // Normalize churn to use the full [0,1] range so the erosion threshold in
@@ -171,6 +178,7 @@ export function createOceanDetailTexture(
       maxSlope = Math.max(maxSlope, Math.abs(slopeX[k]), Math.abs(slopeY[k]));
     }
   }
+  yield { label: LABEL, detail: "packing normals", fraction: 0.97 };
 
   const data = new Uint8Array(N * N * 4);
   for (let k = 0; k < N * N; k++) {
@@ -193,4 +201,12 @@ export function createOceanDetailTexture(
   tex.colorSpace = THREE.NoColorSpace;
   tex.needsUpdate = true;
   return tex;
+}
+
+export function createOceanDetailTexture(
+  renderer: THREE.WebGLRenderer,
+  size = 512,
+  opts: OceanDetailOptions = {}
+): THREE.DataTexture {
+  return drain(bakeOceanDetailTexture(renderer, size, opts));
 }

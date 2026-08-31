@@ -36,10 +36,138 @@
     .hud--tl { top: 16px; left: 20px; }
     .hud--br { bottom: 14px; right: 20px; text-align: right; }
     .hud strong { color: #16324a; font-weight: 600; }
+
+    /* --- Loading screen -------------------------------------------------
+       Markup lives here rather than in JS so the scrim paints on the first
+       frame, before the module bundle has even been evaluated -- the bakes it
+       covers are the reason there is nothing else to look at.
+
+       The exit splits the scrim along the anti-diagonal into two clip-path
+       halves and slides each along the cut normal. The panel straddles the
+       cut, so it fades out first. */
+    #loading {
+      position: fixed;
+      inset: 0;
+      z-index: 10;
+      color: #dce8f2;
+      font: 12px/1.6 ui-monospace, "JetBrains Mono", Consolas, monospace;
+      user-select: none;
+    }
+    #loading[hidden] { display: none; }
+
+    .load-slice {
+      position: absolute;
+      inset: 0;
+      background: #0d1b26;
+      will-change: transform;
+    }
+    /* The halves overlap the cut by 2px: two antialiased clip edges meeting
+       exactly on the diagonal leave a visible hairline of the scene behind. */
+    .load-slice--a { clip-path: polygon(0 0, calc(100% + 2px) 0, 0 calc(100% + 2px)); }
+    .load-slice--b { clip-path: polygon(100% -2px, 100% 100%, -2px 100%); }
+
+    #loading.is-slicing .load-slice {
+      transition: transform 560ms cubic-bezier(0.65, 0, 0.35, 1);
+    }
+    #loading.is-slicing .load-slice--a { transform: translate(-70vw, -70vh); }
+    #loading.is-slicing .load-slice--b { transform: translate(70vw, 70vh); }
+
+    .load-panel {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      transition: opacity 160ms linear;
+    }
+    #loading.is-done .load-panel { opacity: 0; }
+
+    .load-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #eaf3fa;
+    }
+
+    /* CSS-only arc throbber, accented with the sky horizon color. */
+    .load-throbber {
+      width: 15px;
+      height: 15px;
+      border: 2px solid rgba(79, 160, 217, 0.25);
+      border-top-color: #4fa0d9;
+      border-radius: 50%;
+      animation: load-spin 720ms linear infinite;
+    }
+    @keyframes load-spin { to { transform: rotate(360deg); } }
+
+    .load-meter { width: 320px; }
+    .load-track {
+      height: 3px;
+      background: rgba(255, 255, 255, 0.12);
+      overflow: hidden;
+    }
+    .load-fill {
+      height: 100%;
+      width: 0%;
+      background: #4fa0d9;
+      transition: width 120ms linear;
+    }
+    .load-line {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      margin-top: 7px;
+      color: #7d97ab;
+    }
+    .load-detail { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .load-percent { font-variant-numeric: tabular-nums; color: #b6cbdb; }
+
+    /* Completed steps with their measured cost -- the demo is a diagnostic
+       toy, and the bake timings are the interesting part of the wait. */
+    .load-log {
+      width: 320px;
+      min-height: 6.4em;
+      font-size: 11px;
+      line-height: 1.6;
+      color: #56718a;
+    }
+    .load-log div { display: flex; justify-content: space-between; gap: 12px; }
+    .load-log span { font-variant-numeric: tabular-nums; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .load-throbber { animation: none; }
+      #loading.is-slicing .load-slice { transition: none; }
+      #loading.is-slicing .load-slice--a,
+      #loading.is-slicing .load-slice--b { transform: none; }
+      #loading.is-slicing { transition: opacity 300ms linear; opacity: 0; }
+    }
   </style>
 </head>
 <body>
   <canvas id="scene"></canvas>
+
+  <div id="loading">
+    <div class="load-slice load-slice--a"></div>
+    <div class="load-slice load-slice--b"></div>
+    <div class="load-panel">
+      <div class="load-title">
+        <span class="load-throbber"></span>Generating Assets
+      </div>
+      <div class="load-meter">
+        <div class="load-track"><div class="load-fill" id="load-fill"></div></div>
+        <div class="load-line">
+          <span class="load-detail" id="load-detail">starting&hellip;</span>
+          <span class="load-percent" id="load-percent">0%</span>
+        </div>
+      </div>
+      <div class="load-log" id="load-log"></div>
+    </div>
+  </div>
 
   <div class="hud hud--tl">
     <strong>three.js</strong> sky &middot; clouds &middot; FFT ocean<br />

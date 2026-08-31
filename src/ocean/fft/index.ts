@@ -2,6 +2,8 @@ import * as THREE from "three";
 import { GPUComputationRenderer, type Variable } from "three/addons/misc/GPUComputationRenderer.js";
 import SPECTRUM_FRAG from "./shaders/spectrum.frag.glsl";
 import { buildButterflyTable } from "./butterfly.js";
+import { band, drain } from "../../loading/scheduler.js";
+import type { Bake } from "../../loading/types.js";
 
 // --- Ocean FFT pipeline -----------------------------------------------------
 // GPU Tessendorf simulation:
@@ -278,7 +280,7 @@ function waveSpectrum(kx: number, kz: number, depth: number, specs: SpectrumPara
 // Weighted by the cell area dk^2 = (2*pi/L)^2, which is what makes the
 // numbers comparable across cascades of different patch size: P is a
 // spectral *density*, so a mode's variance is P * dk^2, not P.
-export function spectrumVariance(c: OceanFftOptions): number {
+export function* bakeSpectrumVariance(c: OceanFftOptions, label = "Wave spectrum"): Bake<number> {
   const o = mergeOpts(c);
   const N = o.size;
   const specs = resolveSpectra(o);
@@ -290,17 +292,40 @@ export function spectrumVariance(c: OceanFftOptions): number {
       const sm = jm <= N / 2 ? jm : jm - N;
       v += waveSpectrum(sn * dk, sm * dk, o.depth, specs, o.cutoffLow, o.cutoffHigh);
     }
+    yield { label, detail: `variance ${jm + 1}/${N}`, fraction: (jm + 1) / N };
   }
   return v * dk * dk;
+}
+
+export function spectrumVariance(c: OceanFftOptions): number {
+  return drain(bakeSpectrumVariance(c));
 }
 
 // Amplitude scale that makes a *set* of cascades add up to heightRms of RMS
 // wave height. Their variances sum, so normalizing each one on its own would
 // make the sea grow every time a cascade is added.
-export function cascadeAmpScale(cascades: OceanFftOptions[], heightRms: number): number {
+export function* bakeCascadeAmpScale(
+  cascades: OceanFftOptions[],
+  heightRms: number,
+  label = "Wave spectrum"
+): Bake<number> {
   let v = 0;
-  for (const c of cascades) v += spectrumVariance(c);
+  for (let i = 0; i < cascades.length; i++) {
+    v += yield* band(
+      bakeSpectrumVariance(cascades[i], label),
+      label,
+      i / cascades.length,
+      (i + 1) / cascades.length,
+      // Cascades have different sizes, so an unprefixed row count would appear
+      // to run backwards at the seam.
+      cascades.length > 1 ? `cascade ${i + 1}/${cascades.length}` : undefined
+    );
+  }
   return v > 0 ? heightRms / Math.sqrt(v) : 0;
+}
+
+export function cascadeAmpScale(cascades: OceanFftOptions[], heightRms: number): number {
+  return drain(bakeCascadeAmpScale(cascades, heightRms));
 }
 
 // --- h0 spectrum texture ----------------------------------------------------
@@ -308,7 +333,7 @@ export function cascadeAmpScale(cascades: OceanFftOptions[], heightRms: number):
 // Amplitudes carry the shared ampScale, so expected RMS wave height across
 // all cascades == heightRms world units — makes the height knob physical
 // and independent of both `size` and the cascade count.
-function buildH0Texture(o: ResolvedFftOptions, ampScale: number): THREE.DataTexture {
+function* bakeH0Texture(o: ResolvedFftOptions, ampScale: number, label: string): Bake<THREE.DataTexture> {
   const N = o.size;
   const L = o.patchSize;
   const specs = resolveSpectra(o);
@@ -327,6 +352,7 @@ function buildH0Texture(o: ResolvedFftOptions, ampScale: number): THREE.DataText
       const sm = jm <= N / 2 ? jm : jm - N;
       amps[jm * N + jn] = waveSpectrum(sn * dk, sm * dk, o.depth, specs, o.cutoffLow, o.cutoffHigh);
     }
+    yield { label, detail: `h0 row ${jm + 1}/${N}`, fraction: (jm + 1) / N };
   }
 
   // Per-texel amplitude. Two unit gaussians (re, im) give E|h0|^2 = 2 a^2,
@@ -496,7 +522,11 @@ function foamShader(nameC: string): string {
 
 // --- Pipeline factory -------------------------------------------------------
 // Returns { update(dt, t), displacementTexture(), foamTexture(), params }.
-export function createOceanFft(renderer: THREE.WebGLRenderer, opts: OceanFftOptions = {}) {
+export function* buildOceanFft(
+  renderer: THREE.WebGLRenderer,
+  opts: OceanFftOptions = {},
+  label = "Wave cascade"
+) {
   const o = mergeOpts(opts);
   const N = o.size;
   const stages = Math.round(Math.log2(N));
@@ -505,8 +535,8 @@ export function createOceanFft(renderer: THREE.WebGLRenderer, opts: OceanFftOpti
   const gpu = new GPUComputationRenderer(N, N, renderer);
   gpu.setDataType(THREE.FloatType);
 
-  const ampScale = o.ampScale ?? cascadeAmpScale([o], o.heightRms);
-  const h0Tex = buildH0Texture(o, ampScale);
+  const ampScale = o.ampScale ?? (yield* band(bakeCascadeAmpScale([o], o.heightRms, label), label, 0, 0.3));
+  const h0Tex = yield* band(bakeH0Texture(o, ampScale, label), label, 0.3, 0.9);
   const butterflyTex = buildButterflyTexture(N);
   const dummy = gpu.createTexture();
   // Seed for the combine stage: a flat surface has Jacobian 1, not 0.
@@ -622,9 +652,14 @@ export function createOceanFft(renderer: THREE.WebGLRenderer, opts: OceanFftOpti
     return rt;
   };
 
+  // gpu.init() compiles and renders every one of the ~50 pass programs in a
+  // single blocking call. It cannot be split, so the loading screen at least
+  // says what it is waiting on before the thread goes away.
+  yield { label, detail: `compiling ${2 * stages + 5} passes`, fraction: 0.9 };
   const err = gpu.init();
   gpu.createRenderTarget = createRT;
   if (err) throw new Error(`GPUComputationRenderer init failed: ${err}`);
+  yield { label, detail: "ready", fraction: 1 };
 
   return {
     params: o,
@@ -644,4 +679,9 @@ export function createOceanFft(renderer: THREE.WebGLRenderer, opts: OceanFftOpti
     previousDisplacementTexture: () => gpu.getAlternateRenderTarget(combine).texture,
     foamTexture: () => gpu.getCurrentRenderTarget(foam).texture,
   };
+}
+
+/** Builds an FFT cascade in one blocking task. See {@link buildOceanFft}. */
+export function createOceanFft(renderer: THREE.WebGLRenderer, opts: OceanFftOptions = {}) {
+  return drain(buildOceanFft(renderer, opts));
 }

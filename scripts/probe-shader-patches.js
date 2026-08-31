@@ -5,7 +5,8 @@
 // Run: playwright-cli eval "() => import('/scripts/probe-shader-patches.js').then(m => m.default())"
 export default async function probeShaderPatches() {
   const THREE = await import("three");
-  const d = window.__demo;
+  // The scene builds asynchronously behind the loading screen.
+  const d = await (window.__demoReady ?? window.__demo);
   if (!d) return { error: "no __demo" };
 
   // The torus knot is the only tracked MeshStandardMaterial in the scene.

@@ -11,8 +11,11 @@ const CAMERA = { pos: [4, 2.6, 6], target: [0, 0.8, 0] };
 const FRAMES = 90; // enough for TAA to converge and the swell to develop
 const DT = 1 / 60;
 
-export default function captureFrame({ frames = FRAMES, dt = DT } = {}) {
-  const d = window.__demo;
+export default async function captureFrame({ frames = FRAMES, dt = DT } = {}) {
+  // The scene is built asynchronously behind the loading screen. __demoReady
+  // resolves only after that screen has left the DOM, so awaiting it also
+  // guarantees the screenshot is of the render alone.
+  const d = await (window.__demoReady ?? window.__demo);
   if (!d) return { error: "no __demo" };
   if (typeof d.stepFrames !== "function") return { error: "__demo.stepFrames missing" };
 

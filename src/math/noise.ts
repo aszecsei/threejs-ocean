@@ -1,6 +1,13 @@
 // Generic, deterministic, tileable noise primitives shared by texture bakers.
 // Everything here is pure math: callers supply seeds and periods and receive
 // scalars in [0, 1] (or signed derivatives for the curl helpers).
+//
+// The two field bakers (`curlField`, `blueNoiseRanks`) are slow enough to be
+// visible at startup, so each has a `bake*` generator form that yields progress
+// and a synchronous wrapper -- same arithmetic, same bytes, see loading/types.
+
+import { drain } from "../loading/scheduler.js";
+import type { Bake } from "../loading/types.js";
 
 export function hash3(x: number, y: number, z: number, seed: number): number {
   let h = (x * 374761393 + y * 668265263 + z * 2147483647 + seed) | 0;
@@ -75,20 +82,32 @@ export function invertedWorley(x: number, y: number, z: number, period: number, 
 // Returns a Float32Array of size*size*3 signed values (not yet normalized):
 // [curlX(psi1), curlY(psi1), curlY(psi2)] per texel, where
 // curl(psi) = (d(psi)/dy, -d(psi)/dx).
-export function curlField(size: number, period: number, seed: number): Float32Array {
+export function* bakeCurlField(
+  size: number,
+  period: number,
+  seed: number,
+  label = "Curl noise"
+): Bake<Float32Array> {
   const out = new Float32Array(size * size * 3);
   const eps = (0.5 * period) / size;
   const slice1 = 0.37, slice2 = 0.71;
   const psi1 = (x: number, y: number) => perlinFbm(x, y, slice1 * period, period, seed);
   const psi2 = (x: number, y: number) => perlinFbm(x, y, slice2 * period, period, seed + 5407);
   let i = 0;
-  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
-    const u = (x / size) * period, v = (y / size) * period;
-    out[i++] = (psi1(u, v + eps) - psi1(u, v - eps)) / (2 * eps);
-    out[i++] = -(psi1(u + eps, v) - psi1(u - eps, v)) / (2 * eps);
-    out[i++] = (psi2(u, v + eps) - psi2(u, v - eps)) / (2 * eps);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = (x / size) * period, v = (y / size) * period;
+      out[i++] = (psi1(u, v + eps) - psi1(u, v - eps)) / (2 * eps);
+      out[i++] = -(psi1(u + eps, v) - psi1(u - eps, v)) / (2 * eps);
+      out[i++] = (psi2(u, v + eps) - psi2(u, v - eps)) / (2 * eps);
+    }
+    yield { label, detail: `row ${y + 1}/${size}`, fraction: (y + 1) / size };
   }
   return out;
+}
+
+export function curlField(size: number, period: number, seed: number): Float32Array {
+  return drain(bakeCurlField(size, period, seed));
 }
 
 // Void-and-cluster blue-noise rank matrix (Ulichney). Returns a size*size
@@ -96,7 +115,11 @@ export function curlField(size: number, period: number, seed: number): Float32Ar
 // homogeneous point set — the classic dither/jitter texture. On a torus the
 // "largest void" insertion rule stays valid past half fill, so a single
 // insertion loop covers phases II and III.
-export function blueNoiseRanks(size: number, seed: number): Float32Array {
+export function* bakeBlueNoiseRanks(
+  size: number,
+  seed: number,
+  label = "Blue noise"
+): Bake<Float32Array> {
   const N = size * size;
   const sigma = 1.5;
   const kernel = new Float32Array(N);
@@ -132,12 +155,19 @@ export function blueNoiseRanks(size: number, seed: number): Float32Array {
     const i = Math.floor(rand() * N);
     if (!ones[i]) { ones[i] = 1; splat(i, 1); count++; }
   }
+  // Progress bands. The relaxation loop terminates on convergence rather than
+  // at its iteration cap, so its band is charged against a nominal 2N and
+  // simply jumps to the next band when it breaks out early.
+  const RELAX_END = 0.25, PHASE1_END = 0.35;
   for (let iter = 0; iter < 10 * N; iter++) {
     const cluster = pick(true, true);
     ones[cluster] = 0; splat(cluster, -1);
     const voidPos = pick(false, false);
     ones[voidPos] = 1; splat(voidPos, 1);
     if (voidPos === cluster) break;
+    if ((iter & 63) === 63) {
+      yield { label, detail: "relaxing", fraction: RELAX_END * Math.min(1, iter / (2 * N)) };
+    }
   }
   const rank = new Float32Array(N);
   // Phase I: rank the initial points by removing the tightest cluster.
@@ -147,6 +177,7 @@ export function blueNoiseRanks(size: number, seed: number): Float32Array {
     ones[cluster] = 0; splat(cluster, -1);
     rank[cluster] = c - 1;
   }
+  yield { label, detail: "ranking seeds", fraction: PHASE1_END };
   ones.set(snapshot);
   energy.fill(0);
   for (let i = 0; i < N; i++) if (ones[i]) splat(i, 1);
@@ -155,7 +186,18 @@ export function blueNoiseRanks(size: number, seed: number): Float32Array {
     const voidPos = pick(false, false);
     ones[voidPos] = 1; splat(voidPos, 1);
     rank[voidPos] = c;
+    if ((c & 63) === 63) {
+      yield {
+        label,
+        detail: `filling voids ${c}/${N}`,
+        fraction: PHASE1_END + (1 - PHASE1_END) * ((c - M) / (N - M)),
+      };
+    }
   }
   for (let i = 0; i < N; i++) rank[i] /= N;
   return rank;
+}
+
+export function blueNoiseRanks(size: number, seed: number): Float32Array {
+  return drain(bakeBlueNoiseRanks(size, seed));
 }

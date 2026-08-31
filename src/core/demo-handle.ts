@@ -12,6 +12,7 @@ import type { TaaApi } from "../taa/index.js";
 import type { CloudRig } from "../clouds/index.js";
 import type { OceanRig, SceneCapture } from "../ocean/index.js";
 import type { GodRays } from "../render/godrays.js";
+import type { LoadingOverlay } from "../loading/overlay.js";
 
 export interface DemoHandle {
   scene: THREE.Scene;
@@ -30,6 +31,12 @@ export interface DemoHandle {
   /** Assigned once the dispose closure exists. */
   dispose?: () => void;
 
+  /**
+   * The loading screen. Already gone by the time `__demoReady` resolves,
+   * unless `?loading-hold=1` is set -- then `loading.finish()` releases it.
+   */
+  loading: LoadingOverlay;
+
   // --- Deterministic capture ---------------------------------------------
   /** Stops the real-time animation loop. */
   pause(): void;
@@ -43,6 +50,17 @@ export interface DemoHandle {
 
 declare global {
   interface Window {
+    /**
+     * Only exists once the scene has finished building. Construction is
+     * asynchronous (it runs behind the loading screen), so tooling must go
+     * through `__demoReady` rather than reading this at page load.
+     */
     __demo: DemoHandle;
+    /**
+     * Published at module-evaluation time. Resolves after the scene is built,
+     * warmed up, and the loading overlay has left the DOM -- so a screenshot
+     * taken off this promise contains only the render.
+     */
+    __demoReady: Promise<DemoHandle>;
   }
 }

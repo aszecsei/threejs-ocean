@@ -1,7 +1,9 @@
 import * as THREE from "three";
-import { createOceanFft, cascadeAmpScale, OCEAN_FFT_DEFAULTS } from "./fft/index.js";
+import { buildOceanFft, bakeCascadeAmpScale, OCEAN_FFT_DEFAULTS } from "./fft/index.js";
 import { SKY_COLOR_GLSL } from "../sky/index.js";
-import { createOceanDetailTexture } from "./detail-texture.js";
+import { bakeOceanDetailTexture } from "./detail-texture.js";
+import { band, drain } from "../loading/scheduler.js";
+import type { Bake } from "../loading/types.js";
 import { taaMaterialConfig, type TaaApi } from "../taa/index.js";
 import type { CloudPass } from "../clouds/index.js";
 import type { Uniform } from "../core/types.js";
@@ -154,7 +156,13 @@ export function oceanSize() {
 // (where detail matters) and falls off toward the fog-obscured horizon. The
 // mesh is never rotated and snaps to the camera XZ every frame, while the
 // wave sampling stays world-anchored.
-function buildDiscGeometry(rings: number, sectors: number, rMin: number, rMax: number): THREE.BufferGeometry {
+function* bakeDiscGeometry(
+  rings: number,
+  sectors: number,
+  rMin: number,
+  rMax: number,
+  label = "Ocean surface"
+): Bake<THREE.BufferGeometry> {
   const positions = new Float32Array((rings + 1) * sectors * 3);
   const idx = [];
 
@@ -167,6 +175,7 @@ function buildDiscGeometry(rings: number, sectors: number, rMin: number, rMax: n
       positions[o + 1] = 0;
       positions[o + 2] = Math.sin(a) * r;
     }
+    if ((i & 31) === 31) yield { label, detail: `ring ${i + 1}/${rings}`, fraction: 0.4 * (i / rings) };
   }
   for (let i = 0; i < rings; i++) {
     for (let j = 0; j < sectors; j++) {
@@ -177,6 +186,7 @@ function buildDiscGeometry(rings: number, sectors: number, rMin: number, rMax: n
       const d = (i + 1) * sectors + jn;
       idx.push(a, b, c, b, d, c);
     }
+    if ((i & 31) === 31) yield { label, detail: `triangulating ${i + 1}/${rings}`, fraction: 0.4 + 0.6 * (i / rings) };
   }
 
   const geo = new THREE.BufferGeometry();
@@ -184,6 +194,7 @@ function buildDiscGeometry(rings: number, sectors: number, rMin: number, rMax: n
   geo.setIndex(idx);
   return geo;
 }
+
 
 // --- CPU swell approximation (floating objects) ------------------------------
 // A few dispersion-matched components tuned to the FFT swell. Not an exact
@@ -236,7 +247,10 @@ export interface OceanOptions extends Partial<typeof OCEAN_DEFAULTS> {
   cloudShadow?: Record<string, Uniform<unknown>> | null;
 }
 
-export function createOcean(
+// The resumable form. The FFT cascades, the 512² detail bake and the ~61k-vert
+// disc are the three blocks worth watching; they are laid out end to end across
+// this bake's 0..1 range.
+export function* buildOcean(
   scene: THREE.Scene,
   skyUniforms: Record<string, Uniform<unknown>>,
   renderer: THREE.WebGLRenderer,
@@ -271,11 +285,15 @@ export function createOcean(
   // on its own would raise the sea every time a cascade is added. This is
   // what keeps heightRms honest (and independent of `size`).
   const ampScale = cascade2
-    ? cascadeAmpScale([coarse, fine], opts.heightRms ?? OCEAN_FFT_DEFAULTS.heightRms)
+    ? yield* band(
+        bakeCascadeAmpScale([coarse, fine], opts.heightRms ?? OCEAN_FFT_DEFAULTS.heightRms, "Wave spectrum"),
+        "Wave spectrum", 0, 0.15)
     : null;
 
-  const fft = createOceanFft(renderer, { ...coarse, ampScale });
-  const fft2 = cascade2 ? createOceanFft(renderer, { ...fine, ampScale }) : null;
+  const fft = yield* band(buildOceanFft(renderer, { ...coarse, ampScale }, "Wave cascade"), "Wave cascade", 0.15, 0.45);
+  const fft2 = cascade2
+    ? yield* band(buildOceanFft(renderer, { ...fine, ampScale }, "Wave cascade (fine)"), "Wave cascade (fine)", 0.45, 0.6)
+    : null;
 
   const uniforms = {
     // FFT pipeline outputs (rebound every frame; the pipeline ping-pongs).
@@ -314,11 +332,13 @@ export function createOcean(
 
     // Baked procedural detail texture (ripple normals + foam churn).
     uDetailTex: {
-      value: createOceanDetailTexture(renderer, o.DETAIL_TEX_SIZE, {
-        fold: o.DETAIL_FOLD,
-        gain: o.DETAIL_GAIN,
-        octaves: o.DETAIL_OCTAVES,
-      }),
+      value: yield* band(
+        bakeOceanDetailTexture(renderer, o.DETAIL_TEX_SIZE, {
+          fold: o.DETAIL_FOLD,
+          gain: o.DETAIL_GAIN,
+          octaves: o.DETAIL_OCTAVES,
+        }),
+        "Ocean detail texture", 0.6, 0.9),
     },
     uDetailScale: { value: new THREE.Vector2(...o.DETAIL_SCALE) },
     uDetailStrength: { value: detail ? o.DETAIL_STRENGTH : 0 },
@@ -357,13 +377,17 @@ export function createOcean(
     ...taaConfig.uniforms,
   };
 
-  const mesh = new THREE.Mesh(
-    buildDiscGeometry(
+  const discGeometry = yield* band(
+    bakeDiscGeometry(
       OCEAN_DEFAULTS.DISC_RINGS,
       OCEAN_DEFAULTS.DISC_SECTORS,
       OCEAN_DEFAULTS.DISC_RMIN,
       OCEAN_DEFAULTS.DISC_RADIUS
     ),
+    "Ocean surface", 0.9, 1);
+
+  const mesh = new THREE.Mesh(
+    discGeometry,
     new THREE.ShaderMaterial({
       uniforms,
       vertexShader: VERTEX_SHADER,
@@ -411,6 +435,16 @@ export function createOcean(
     },
     sampleSwell,
   };
+}
+
+/** Builds the ocean rig in one blocking task. See {@link buildOcean}. */
+export function createOcean(
+  scene: THREE.Scene,
+  skyUniforms: Record<string, Uniform<unknown>>,
+  renderer: THREE.WebGLRenderer,
+  opts: OceanOptions = {}
+) {
+  return drain(buildOcean(scene, skyUniforms, renderer, opts));
 }
 
 /** The ocean rig returned by {@link createOcean}. */
