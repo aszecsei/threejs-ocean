@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { GPUComputationRenderer, type Variable } from "three/addons/misc/GPUComputationRenderer.js";
 import SPECTRUM_FRAG from "./shaders/spectrum.frag.glsl";
+import { buildButterflyTable } from "./butterfly.js";
 
 // --- Ocean FFT pipeline -----------------------------------------------------
 // GPU Tessendorf simulation:
@@ -363,28 +364,8 @@ function buildH0Texture(o: ResolvedFftOptions, ampScale: number): THREE.DataText
 // (the +/- sign folds into the stored twiddle; DIT with bit-reversed input).
 function buildButterflyTexture(N: number): THREE.DataTexture {
   const stages = Math.round(Math.log2(N));
-  const data = new Float32Array(N * stages * 4);
-  for (let s = 1; s <= stages; s++) {
-    const span = 1 << s;
-    const m = span >> 1;
-    for (let j = 0; j < N; j++) {
-      const r = j % span;
-      let a, b, sign, ang;
-      if (r < m) {
-        a = j; b = j + m; sign = 1;
-        ang = (2 * Math.PI * r) / span;
-      } else {
-        a = j - m; b = j; sign = -1;
-        ang = (2 * Math.PI * (r - m)) / span;
-      }
-      const idx = ((s - 1) * N + j) * 4;
-      data[idx + 0] = a;
-      data[idx + 1] = b;
-      data[idx + 2] = sign * Math.cos(ang);
-      data[idx + 3] = sign * Math.sin(ang);
-    }
-  }
-  const tex = new THREE.DataTexture(data, N, stages, THREE.RGBAFormat, THREE.FloatType);
+  const tex = new THREE.DataTexture(
+    buildButterflyTable(N), N, stages, THREE.RGBAFormat, THREE.FloatType);
   tex.minFilter = THREE.NearestFilter;
   tex.magFilter = THREE.NearestFilter;
   tex.needsUpdate = true;
