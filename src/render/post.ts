@@ -1,8 +1,8 @@
 import * as THREE from "three";
-import * as flags from "./flags.js";
+import * as flags from "../flags.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
-import { createTemporalAA } from "./taa.js";
+import { createTemporalAA } from "../taa/index.js";
 
 // --- Post pipeline -----------------------------------------------------------
 // Every draw targets `frame` in linear HDR. With TAA, attachment 1 carries

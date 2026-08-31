@@ -1,10 +1,10 @@
 import * as THREE from "three";
-import * as flags from "./flags.js";
-import { taaMaterialConfig, type TaaHandle } from "./taa.js";
-import SKY_COLOR_STATIC_GLSL from "./sky/shaders/sky-color.glsl";
-import SKY_DOME_VERT from "./sky/shaders/sky-dome.vert.glsl";
-import SKY_DOME_UNIFORMS from "./sky/shaders/sky-dome.uniforms.glsl";
-import SKY_DOME_MAIN from "./sky/shaders/sky-dome.main.glsl";
+import * as flags from "../flags.js";
+import { taaMaterialConfig, type TaaHandle } from "../taa/index.js";
+import SKY_COLOR_STATIC_GLSL from "./shaders/sky-color.glsl";
+import SKY_DOME_VERT from "./shaders/sky-dome.vert.glsl";
+import SKY_DOME_UNIFORMS from "./shaders/sky-dome.uniforms.glsl";
+import SKY_DOME_MAIN from "./shaders/sky-dome.main.glsl";
 
 // --- Sky palette ----------------------------------------------------------
 // Shared sRGB hex values. Under the scattering model these are no longer the

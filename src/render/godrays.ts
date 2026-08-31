@@ -1,11 +1,11 @@
 import * as THREE from "three";
-import * as flags from "./flags.js";
-import { taaMaterialConfig, type TaaHandle } from "./taa.js";
-import type { Uniform } from "./core/types.js";
-import FULLSCREEN_VERT from "./shaders/common/fullscreen.vert.glsl";
-import BLUR_FRAG from "./render/shaders/godrays-blur.frag.glsl";
-import CLOUD_MASK_FRAG from "./render/shaders/godrays-cloud-mask.frag.glsl";
-import COMPOSITE_FRAG from "./render/shaders/godrays-composite.frag.glsl";
+import * as flags from "../flags.js";
+import { taaMaterialConfig, type TaaHandle } from "../taa/index.js";
+import type { Uniform } from "../core/types.js";
+import FULLSCREEN_VERT from "../shaders/common/fullscreen.vert.glsl";
+import BLUR_FRAG from "./shaders/godrays-blur.frag.glsl";
+import CLOUD_MASK_FRAG from "./shaders/godrays-cloud-mask.frag.glsl";
+import COMPOSITE_FRAG from "./shaders/godrays-composite.frag.glsl";
 
 // --- Screen-space crepuscular rays ----------------------------------------
 // Three passes after the main frame:

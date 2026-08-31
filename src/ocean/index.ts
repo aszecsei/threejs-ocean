@@ -1,16 +1,16 @@
 import * as THREE from "three";
-import { createOceanFft, cascadeAmpScale, OCEAN_FFT_DEFAULTS } from "./ocean-fft.js";
-import { SKY_COLOR_GLSL } from "./sky.js";
-import { createOceanDetailTexture } from "./ocean-textures.js";
-import { taaMaterialConfig, type TaaApi } from "./taa.js";
-import type { CloudPass } from "./clouds.js";
-import type { Uniform } from "./core/types.js";
-import * as flags from "./flags.js";
-import OCEAN_VERT from "./ocean/shaders/ocean.vert.glsl";
-import OCEAN_UNIFORMS from "./ocean/shaders/ocean.uniforms.glsl";
-import OCEAN_MAIN from "./ocean/shaders/ocean.main.glsl";
-import CAPTURE_BLIT_VERT from "./ocean/shaders/capture-blit.vert.glsl";
-import CAPTURE_BLIT_FRAG from "./ocean/shaders/capture-blit.frag.glsl";
+import { createOceanFft, cascadeAmpScale, OCEAN_FFT_DEFAULTS } from "./fft/index.js";
+import { SKY_COLOR_GLSL } from "../sky/index.js";
+import { createOceanDetailTexture } from "./detail-texture.js";
+import { taaMaterialConfig, type TaaApi } from "../taa/index.js";
+import type { CloudPass } from "../clouds/index.js";
+import type { Uniform } from "../core/types.js";
+import * as flags from "../flags.js";
+import OCEAN_VERT from "./shaders/ocean.vert.glsl";
+import OCEAN_UNIFORMS from "./shaders/ocean.uniforms.glsl";
+import OCEAN_MAIN from "./shaders/ocean.main.glsl";
+import CAPTURE_BLIT_VERT from "./shaders/capture-blit.vert.glsl";
+import CAPTURE_BLIT_FRAG from "./shaders/capture-blit.frag.glsl";
 
 // --- Stylized FFT ocean -----------------------------------------------------
 // Distance-graded radial disc (dense verts near the camera, sparse to the

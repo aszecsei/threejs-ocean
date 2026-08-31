@@ -7,11 +7,11 @@
 
 import type * as THREE from "three";
 import type { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import type { PostPipeline } from "../post.js";
-import type { TaaApi } from "../taa.js";
-import type { CloudRig } from "../clouds.js";
-import type { OceanRig, SceneCapture } from "../ocean.js";
-import type { GodRays } from "../godrays.js";
+import type { PostPipeline } from "../render/post.js";
+import type { TaaApi } from "../taa/index.js";
+import type { CloudRig } from "../clouds/index.js";
+import type { OceanRig, SceneCapture } from "../ocean/index.js";
+import type { GodRays } from "../render/godrays.js";
 
 export interface DemoHandle {
   scene: THREE.Scene;

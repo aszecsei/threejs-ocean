@@ -1,8 +1,8 @@
 import * as THREE from "three";
-import * as flags from "./flags.js";
-import FULLSCREEN_VERT from "./shaders/common/fullscreen.vert.glsl";
-import RESOLVE_FRAG from "./clouds/temporal/shaders/resolve.frag.glsl";
-import BLUR_FRAG from "./clouds/temporal/shaders/blur.frag.glsl";
+import * as flags from "../../flags.js";
+import FULLSCREEN_VERT from "../../shaders/common/fullscreen.vert.glsl";
+import RESOLVE_FRAG from "./shaders/resolve.frag.glsl";
+import BLUR_FRAG from "./shaders/blur.frag.glsl";
 
 /** Cloud temporal-reprojection mode; "off" when the GPU cannot support it. */
 export type CloudTemporalMode = "off" | "interleaved" | "full";

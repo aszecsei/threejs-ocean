@@ -1,13 +1,13 @@
 import * as THREE from "three";
 import * as flags from "./flags.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { SKY_PALETTE, makeSunDirection, createSky, deriveSceneColors } from "./sky.js";
-import { cloudsEnabled, createClouds } from "./clouds.js";
-import { attachCloudShadow } from "./cloud-shadows.js";
-import { oceanEnabled, oceanSize, createOcean, sampleSwell, createSceneCapture } from "./ocean.js";
-import { raysStrength, createGodRays } from "./godrays.js";
-import { bloomStrength, createPostPipeline } from "./post.js";
-import type { OceanRig, SceneCapture } from "./ocean.js";
+import { SKY_PALETTE, makeSunDirection, createSky, deriveSceneColors } from "./sky/index.js";
+import { cloudsEnabled, createClouds } from "./clouds/index.js";
+import { attachCloudShadow } from "./clouds/shadows/index.js";
+import { oceanEnabled, oceanSize, createOcean, sampleSwell, createSceneCapture } from "./ocean/index.js";
+import { raysStrength, createGodRays } from "./render/godrays.js";
+import { bloomStrength, createPostPipeline } from "./render/post.js";
+import type { OceanRig, SceneCapture } from "./ocean/index.js";
 import type { DemoHandle } from "./core/demo-handle.js";
 
 const canvas = document.getElementById("scene") as HTMLCanvasElement | null;

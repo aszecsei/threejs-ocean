@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { blueNoiseRanks, curlField, invertedWorley, perlinFbm } from "./noise.js";
+import { blueNoiseRanks, curlField, invertedWorley, perlinFbm } from "../math/noise.js";
 
 // Deterministic CPU-baked, tileable cloud volumes. The base texture follows
 // the Perlin-Worley packing used by real-time cloud renderers; the detail

@@ -1,10 +1,10 @@
 import * as THREE from "three";
-import * as flags from "./flags.js";
-import { taaMaterialConfig, type TaaHandle } from "./taa.js";
-import type { Defines, Uniform } from "./core/types.js";
-import FULLSCREEN_VERT from "./shaders/common/fullscreen.vert.glsl";
-import SHADOW_MAP_FRAG from "./clouds/shadows/shaders/shadow-map.frag.glsl";
-import DEBUG_FRAG from "./clouds/shadows/shaders/debug.frag.glsl";
+import * as flags from "../../flags.js";
+import { taaMaterialConfig, type TaaHandle } from "../../taa/index.js";
+import type { Defines, Uniform } from "../../core/types.js";
+import FULLSCREEN_VERT from "../../shaders/common/fullscreen.vert.glsl";
+import SHADOW_MAP_FRAG from "./shaders/shadow-map.frag.glsl";
+import DEBUG_FRAG from "./shaders/debug.frag.glsl";
 
 const RESOLUTION = 256;
 // Ocean radius is 380 world units. Cover its full 760-unit diameter plus a

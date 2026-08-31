@@ -1,10 +1,10 @@
 import * as THREE from "three";
-import * as flags from "./flags.js";
-import type { TaaMaterialConfig, Uniform } from "./core/types.js";
-import FULLSCREEN_VERT from "./shaders/common/fullscreen.vert.glsl";
-import TAA_FRAGMENT_GLSL_SRC from "./taa/shaders/contract.glsl";
-import RESOLVE_FRAG from "./taa/shaders/resolve.frag.glsl";
-import DISPLAY_FRAG from "./taa/shaders/display.frag.glsl";
+import * as flags from "../flags.js";
+import type { TaaMaterialConfig, Uniform } from "../core/types.js";
+import FULLSCREEN_VERT from "../shaders/common/fullscreen.vert.glsl";
+import TAA_FRAGMENT_GLSL_SRC from "./shaders/contract.glsl";
+import RESOLVE_FRAG from "./shaders/resolve.frag.glsl";
+import DISPLAY_FRAG from "./shaders/display.frag.glsl";
 
 // Full-image temporal AA. The current frame uses two MRT attachments:
 //   0: linear HDR color

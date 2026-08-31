@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { GPUComputationRenderer, type Variable } from "three/addons/misc/GPUComputationRenderer.js";
-import SPECTRUM_FRAG from "./ocean/fft/shaders/spectrum.frag.glsl";
+import SPECTRUM_FRAG from "./shaders/spectrum.frag.glsl";
 
 // --- Ocean FFT pipeline -----------------------------------------------------
 // GPU Tessendorf simulation:
