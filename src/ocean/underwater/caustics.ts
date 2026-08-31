@@ -44,6 +44,16 @@ export function causticsEnabled() {
   return flags.enabled("caustics");
 }
 
+/**
+ * `?caustic-slope=<n>` overrides the surface steepening, which is the knob
+ * that sets how large the caustic cells are. Steeper surface, shorter focal
+ * length, so the waves that happen to focus at the floor are *longer* ones
+ * and the cells come out bigger. Worth being able to sweep from the URL.
+ */
+export function causticSlope() {
+  return flags.num("caustic-slope", CAUSTICS_DEFAULTS.SLOPE_SCALE, { min: 0.05, max: 8 });
+}
+
 export interface CausticsOptions extends Partial<typeof CAUSTICS_DEFAULTS> {
   /** The sea floor the photons land on. Without one they land on a plane. */
   seabed?: SeabedRig | null;
@@ -95,7 +105,7 @@ export function createCaustics(
     uDisplace: ocean.uniforms.uDisplace,
     uFoam: ocean.uniforms.uFoam,
     uPatchSize: ocean.uniforms.uPatchSize,
-    uSlopeScale: { value: o.SLOPE_SCALE },
+    uSlopeScale: { value: opts.SLOPE_SCALE ?? causticSlope() },
     uSunDirection: medium.uniforms.uSunDirection,
     uWaterIor: medium.uniforms.uWaterIor,
     uEmitCenter: { value: new THREE.Vector2() },

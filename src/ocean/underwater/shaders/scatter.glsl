@@ -125,7 +125,13 @@
     // Sun transmittance is measured along the refracted ray, so a metre of
     // depth costs more than a metre of path when the sun is low.
     float sunRun = 1.0 / max(-uWaterSunDirection.y, 0.05);
-    float phase = waterPhase(dot(dir, uWaterSunDirection));
+    // uWaterSunDirection is the direction the light *travels*, which is
+    // downward, so the scattering angle is measured against its negation --
+    // the direction the sun is in. Backwards, this puts the forward lobe
+    // behind the viewer: with g = 0.7 the peak and the trough differ by a
+    // factor of 180, so the shafts disappear in precisely the direction you
+    // have to look to see them.
+    float phase = waterPhase(-dot(dir, uWaterSunDirection));
     vec3 sum = vec3(0.0);
     for (int i = 0; i < WATER_SHAFT_STEPS; i++) {
       float t = (float(i) + jitter) * dt;

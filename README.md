@@ -57,7 +57,7 @@ screen stays live. Every one keeps a synchronous wrapper (`createX` calls
 `drain(buildX(...))`), which is what the pure-CPU tests and the rig type aliases
 use — so chunking a bake never changes its signature, its type, or its bytes.
 
-Because construction is now asynchronous, `window.__demo` does not exist at
+Because construction is asynchronous, `window.__demo` does not exist at
 module-evaluation time. Tooling must await **`window.__demoReady`**, which
 resolves after the overlay has left the DOM.
 
@@ -87,42 +87,22 @@ three.js upgrade.
 
 ## Underwater
 
-Everything below the waterline is `ocean/underwater/`, and none of it runs
+Everything below the waterline is `ocean/underwater/`; none of it runs
 while the camera is clear of the surface.
 
 The optics come from two papers in `docs/`. **Monzon et al. (CEIG 2023)**
 splits in-scattering in two: substituting the oceanographic downwelling law
 `E_D(y) = E_D0 e^(-Kd y)` collapses the multiple-scattering integral into a
-closed form, evaluated once per pixel, and that is the whole dark blue fog.
+closed form, evaluated once per pixel, and that responsible for the dark blue fog.
 Single scattering — the sun shafts — still has to be marched.
 **Papadopoulos & Papaioannou (GraphiCon 09)** supplies the caustics, as a
 photon grid splatted from light space; here that is a `THREE.Points` draw,
-since WebGL2 has no geometry shader and does not need one.
-
-Three things carry the state, and it matters which answers what:
-
-- **The water mask** — the ocean mesh alone, drawn with its own vertex shader
-  and back faces on. A surface met from below puts the ray in water, one met
-  from above puts it in air. This is the per-pixel authority.
-- **The height probe** — one texel read out of the FFT displacement target,
-  giving the true wave height under the camera. `sampleSwell` is out by over
-  a metre against the real field (measured), which is fine for bobbing the
-  knot and useless for placing a waterline.
-- **`sampleSwell`** — still decides whether the passes run at all, with a
-  generous margin, because that question tolerates being wrong.
+since WebGL2 has no geometry shader.
 
 The waterline itself is modelled as a camera port of finite radius. A pinhole
 has no waterline: it is above the surface or below it and the image flips in
 one frame. Giving it a width makes the crossing an over-under shot, with the
 lower half of the frame wet while the water is partway up the glass.
-
-Two deliberate omissions. Scene lights are **not** dimmed with camera depth
-(the usual trick): the only lit object is the knot, which floats *at* the
-surface and is lit correctly there — what makes it dark from below is the
-water between it and the eye, which the resolve pass already applies. And the
-ocean surface still does not refract from above, so the seabed never shows
-through it; that is the existing shading model, not something the seabed
-changed.
 
 ## Flags
 
@@ -151,6 +131,7 @@ Everything diagnostic is a URL query parameter, read fresh on every call.
 | `?water=I\|II\|3C` | Jerlov medium preset: clearest ocean, clear ocean, coastal |
 | `?shafts=0\|<n>` | Disable single scattering, or set its step count |
 | `?caustics=0` | Drop the caustic map; shafts and sand go smooth |
+| `?caustic-slope=<n>` | Surface steepening in the photon splat; sets caustic cell size |
 | `?meniscus=0` | Drop the waterline film |
 | `?seabed=0` `?seabed-depth=<m>` | Drop the sea floor, or move it (default 10) |
 | `?underwater-debug=mask\|depth\|caustics` | Underwater diagnostic views |
