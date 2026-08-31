@@ -1,7 +1,11 @@
 import * as THREE from "three";
 import * as flags from "./flags.js";
-import { TAA_FRAGMENT_GLSL, taaMaterialConfig, type TaaHandle } from "./taa.js";
+import { taaMaterialConfig, type TaaHandle } from "./taa.js";
 import type { Uniform } from "./core/types.js";
+import FULLSCREEN_VERT from "./shaders/common/fullscreen.vert.glsl";
+import BLUR_FRAG from "./render/shaders/godrays-blur.frag.glsl";
+import CLOUD_MASK_FRAG from "./render/shaders/godrays-cloud-mask.frag.glsl";
+import COMPOSITE_FRAG from "./render/shaders/godrays-composite.frag.glsl";
 
 // --- Screen-space crepuscular rays ----------------------------------------
 // Three passes after the main frame:
@@ -40,13 +44,6 @@ const BLUR_DECAY = 0.86;
 // tone mapping), which reads weaker than the old gamma-space add.
 const STRENGTH_BASE = 1.0;
 
-const QUAD_VERT = /* glsl */ `
-  varying vec2 vUv;
-  void main() {
-    vUv = uv;
-    gl_Position = vec4(position.xy, 0.0, 1.0);
-  }
-`;
 
 /** What god rays need from the sky rig. */
 export interface GodRaySky {
@@ -114,25 +111,14 @@ export function createGodRays(
     },
     depthTest: false,
     depthWrite: false,
-    vertexShader: QUAD_VERT,
-    fragmentShader: /* glsl */ `
-      uniform sampler2D tDiffuse;
-      uniform vec2 uSunUv;
-      uniform float uReach;
-      varying vec2 vUv;
-      void main() {
-        vec2 delta = (uSunUv - vUv) * uReach / float(${BLUR_SAMPLES});
-        vec2 uv = vUv;
-        vec3 sum = vec3(0.0);
-        float w = 1.0;
-        for (int i = 0; i < ${BLUR_SAMPLES}; i++) {
-          sum += texture2D(tDiffuse, uv).rgb * w;
-          uv += delta;
-          w *= ${BLUR_DECAY};
-        }
-        gl_FragColor = vec4(sum / float(${BLUR_SAMPLES}), 1.0);
-      }
-    `,
+    // The loop bound must stay a compile-time constant, so these two ride in
+    // as defines rather than being interpolated into the source.
+    defines: {
+      BLUR_SAMPLES: String(BLUR_SAMPLES),
+      BLUR_DECAY: BLUR_DECAY.toFixed(6),
+    },
+    vertexShader: FULLSCREEN_VERT,
+    fragmentShader: BLUR_FRAG,
   });
 
   // Multiplies the mask by the cloud buffer's transmittance: with blending
@@ -149,14 +135,8 @@ export function createGodRays(
         blendDst: THREE.OneMinusSrcAlphaFactor,
         depthTest: false,
         depthWrite: false,
-        vertexShader: QUAD_VERT,
-        fragmentShader: /* glsl */ `
-          uniform sampler2D tClouds;
-          varying vec2 vUv;
-          void main() {
-            gl_FragColor = vec4(0.0, 0.0, 0.0, texture2D(tClouds, vUv).a);
-          }
-        `,
+        vertexShader: FULLSCREEN_VERT,
+        fragmentShader: CLOUD_MASK_FRAG,
       })
     : null;
 
@@ -186,31 +166,8 @@ export function createGodRays(
     defines: taaConfig.defines,
     depthTest: false,
     depthWrite: false,
-    vertexShader: QUAD_VERT,
-    fragmentShader: /* glsl */ `
-      uniform sampler2D tRays;
-      uniform vec3 uSunColor;
-      uniform float uStrength;
-      uniform float uDebug;
-      varying vec2 vUv;
-      ${TAA_FRAGMENT_GLSL}
-      void main() {
-        float r = texture2D(tRays, vUv).r;
-        if (uDebug > 0.5) {
-          gl_FragColor = vec4(vec3(r), 1.0);
-          #ifdef TAA_ENABLED
-          taaMotion = vec4(0.0);
-          #endif
-          return;
-        }
-        gl_FragColor = vec4(uSunColor * r * uStrength, 1.0);
-        #ifdef TAA_ENABLED
-        // Rays are reconstructed in screen space and do not have one exact
-        // world velocity. Reduce history where they are visible instead.
-        taaMotion = vec4(0.0, 0.0, 0.0, clamp(r * uStrength, 0.0, 1.0));
-        #endif
-      }
-    `,
+    vertexShader: FULLSCREEN_VERT,
+    fragmentShader: COMPOSITE_FRAG,
   });
 
   const sunView = new THREE.Vector3();
