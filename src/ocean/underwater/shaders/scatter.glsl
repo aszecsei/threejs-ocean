@@ -57,9 +57,10 @@
    * `originDepth` is o_y, metres below the surface; `dirY` is the ray's
    * upward component w_y; `s` is the path length S through water.
    *
-   * `a` is negative for every preset (Kd < sigma_t componentwise, and
-   * dirY <= 1), so the pole at a = 0 is unreachable; the clamp only insures
-   * against a hand-edited coefficient set.
+   * `a` is negative for every preset -- Kd < sigma_t in every channel, which
+   * physics requires and test/underwater.test.ts enforces, and dirY is at
+   * most 1 -- so the pole at a = 0 is unreachable. The clamp is insurance
+   * against a hand-edited coefficient set, not the thing keeping it finite.
    */
   vec3 waterMultiScatter(float originDepth, float dirY, float s) {
     vec3 a = min(uWaterKd * dirY - uWaterSigmaT, vec3(-1e-3));

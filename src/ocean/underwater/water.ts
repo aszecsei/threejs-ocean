@@ -35,7 +35,11 @@ export const WATER_TYPES = {
   I: {
     sigmaA: [0.42, 0.065, 0.019],
     sigmaS: [0.006, 0.008, 0.010],
-    kd: [0.35, 0.055, 0.030],
+    // Kd cannot exceed extinction -- diffuse light cannot be attenuated
+    // faster than light is removed -- and Eq. 4 divides by (Kd*w_y - sigma_t),
+    // so a preset that broke that would flip the closed form from decay to
+    // growth. test/underwater.test.ts holds every preset to it.
+    kd: [0.40, 0.065, 0.022],
   },
   // Jerlov I-II: clear open ocean, the default. Red is gone by ~5 m, blue
   // carries 30. The scattering coefficient is what sets how much haze the
