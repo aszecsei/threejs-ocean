@@ -1,8 +1,8 @@
 import * as THREE from "three";
 import { SKY_COLOR_GLSL } from "./sky.js";
 import { TAA_FRAGMENT_GLSL, taaMaterialConfig } from "./taa.js";
-import { createCloudNoiseTextures } from "./cloud-noise.js";
-import { CLOUD_DENSITY_GLSL } from "./cloud-density.glsl.js";
+import { createBlueNoiseTexture, createCirrusNoiseTexture, createCloudNoiseTextures, createCurlNoiseTexture } from "./cloud-noise.js";
+import { CLOUD_CIRRUS_GLSL, CLOUD_DENSITY_GLSL } from "./cloud-density.glsl.js";
 import { cloudTemporalMode, createCloudTemporal } from "./cloud-temporal.js";
 import { createCloudShadows } from "./cloud-shadows.js";
 
@@ -29,8 +29,26 @@ export function cloudFarGrowth() {
   const n = Number(query("cloud-far", "1"));
   return Number.isFinite(n) ? Math.max(0, n) : 1;
 }
+// Mid-frequency shape band (?cloud-midband=0 disables, or a 0-2 strength
+// multiplier). Fills the feature-size gap between the base billows and the
+// detail erosion; on by default.
+export function cloudMidBand() {
+  const v = query("cloud-midband", "1");
+  if (v === "" || v === "true") return 1;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.max(0, Math.min(2, n)) : 0;
+}
 
-const DEBUG_MODES = ["", "profile", "coverage", "type", "base-noise", "detail-noise", "coarse-density", "cloud-depth", "cloud-reactive", "shadow", "ambient"];
+// High-altitude 2.5-D cirrus layer (?cirrus=0 compiles it out entirely).
+export function cirrusEnabled() { return flagEnabled("cirrus"); }
+function cirrusParam(name, fallback) {
+  const n = Number(query(name, String(fallback)));
+  return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : fallback;
+}
+function cirrusCoverage() { return cirrusParam("cirrus-coverage", 0.40); }
+function cirrusType() { return cirrusParam("cirrus-type", 0.25); }
+
+const DEBUG_MODES = ["", "profile", "coverage", "type", "base-noise", "detail-noise", "coarse-density", "cloud-depth", "cloud-reactive", "shadow", "ambient", "history", "cirrus-coverage", "cirrus-density"];
 function debugMode() {
   const mode = query("cloud-debug", "");
   if (mode === "ambient-only") return DEBUG_MODES.indexOf("ambient");
@@ -47,6 +65,10 @@ export function createClouds(scene, skyUniforms, renderer, taa = null) {
   const noiseResources = requestedNoise === "texture" ? createCloudNoiseTextures(renderer) : null;
   const activeNoise = noiseResources ? "texture" : "procedural";
   if (requestedNoise === "texture" && !noiseResources) console.warn("Cloud texture noise unsupported; using procedural noise");
+  const curlNoise = createCurlNoiseTexture();
+  const blueNoise = createBlueNoiseTexture();
+  const cirrusOn = cirrusEnabled();
+  const cirrusNoise = cirrusOn ? createCirrusNoiseTexture() : null;
   const temporalMode = divisor > 0 ? cloudTemporalMode(renderer) : "off";
   const taaConfig = taaMaterialConfig(taa);
   const ownCurrentVP = new THREE.Matrix4();
@@ -63,6 +85,9 @@ export function createClouds(scene, skyUniforms, renderer, taa = null) {
     uDebugMode: { value: debugMode() },
     tCloudBaseNoise: { value: noiseResources?.base ?? null },
     tCloudDetailNoise: { value: noiseResources?.detail ?? null },
+    tCloudCurlNoise: { value: curlNoise },
+    tCloudBlueNoise: { value: blueNoise },
+    ...(cirrusOn ? { tCloudCirrusNoise: { value: cirrusNoise } } : {}),
     uSunDirection: skyUniforms.uSunDirection,
     uSunColor: skyUniforms.uSunColor,
     uZenithColor: skyUniforms.uZenithColor,
@@ -79,22 +104,52 @@ export function createClouds(scene, skyUniforms, renderer, taa = null) {
   const densityDefines = {
     CLOUD_BOTTOM: CLOUD_BOTTOM.toFixed(1), CU_TOP: CLOUD_TOP.toFixed(1), CB_TOP: TOWER_TOP.toFixed(1),
     CU_HEIGHT: (CLOUD_TOP - CLOUD_BOTTOM).toFixed(1), MAX_DIST: len(160),
-    NOISE_SCALE: (0.17 / S).toFixed(6), WEATHER_SCALE: (1 / (48 * S)).toFixed(8),
-    EXTINCTION: (3.2 / S).toFixed(6), HAZE_DIST: len(140),
-    COVERAGE: "0.70", SHAPE_WIDTH: profileMode() === "dimensional" ? "0.20" : "0.22",
+    NOISE_SCALE: (0.26 / S).toFixed(6), WEATHER_SCALE: (1 / (48 * S)).toFixed(8),
+    EXTINCTION: (3.6 / S).toFixed(6), HAZE_DIST: len(140),
+    COVERAGE: "0.70", SHAPE_WIDTH: profileMode() === "dimensional" ? "0.30" : "0.20",
     TOWER_THRESHOLD: "0.66", TOWER_BAND: "0.20", ANVIL_SPREAD: "0.30", ANVIL_BIAS: "0.70", ANVIL_SHEAR: "0.12",
-    EROSION: "0.25", EROSION_SCALE: "2.0", WIND_SPEED: "0.05", CUMULUS_GAIN: "1.60", TOWER_GAIN: "2.40",
-    COVERAGE_CLEAR: "0.15", COVERAGE_OVERCAST: "0.68", TYPE_LOW: "0.25", TYPE_HIGH: "0.78", TYPE_CORRELATION: "0.20",
+    EROSION: "0.95", EROSION_SCALE: "2.0", WIND_SPEED: "0.05", CUMULUS_GAIN: "1.35", TOWER_GAIN: "2.30",
+    DENSITY_SHAPE: "1.35", CURL_STRENGTH: "0.55",
+    DETAIL_FADE_START: len(55), DETAIL_FADE_END: len(120), NEAR_SHADOW_STEP: len(0.8),
+    COVERAGE_CLEAR: "0.15", COVERAGE_OVERCAST: "0.90", TYPE_LOW: "0.25", TYPE_HIGH: "0.78", TYPE_CORRELATION: "0.35",
+    AIRMASS_CLEAR: "0.38", AIRMASS_FULL: "0.75", BREAKUP: "0.45",
     TYPE_STRATO: "0.28", TYPE_CUMULUS: "0.62", TOWER_TYPE_START: "0.60", TOWER_TYPE_FULL: "0.86",
     TOWER_COVERAGE_MIN: "0.34", TOWER_COVERAGE_FULL: "0.72",
     ...(profileMode() === "dimensional" ? { CLOUD_PROFILE_DIMENSIONAL: "" } : {}),
     ...(weatherMode() === "split" ? { CLOUD_WEATHER_SPLIT: "" } : {}),
     ...(activeNoise === "texture" ? { CLOUD_NOISE_TEXTURE: "" } : {}),
+    // The mid band carries usable silhouette detail further out than the fine
+    // erosion can, so its variant also pushes the erosion fade range out.
+    ...(cloudMidBand() > 0 ? {
+      CLOUD_MID_BAND: "", MID_BAND_STRENGTH: (0.30 * cloudMidBand()).toFixed(3),
+      DETAIL_FADE_START: len(70), DETAIL_FADE_END: len(160),
+    } : {}),
   };
+  // Cirrus defines are view-shader-only by design: they must never reach
+  // densityDefines, which the shadow map compiles — the thin high layer
+  // casts no meaningful ground shadow and must not slow that march.
+  const cirrusWind = new THREE.Vector2(0.83, 0.55).normalize();
+  const cirrusDefines = cirrusOn ? {
+    CLOUD_CIRRUS: "",
+    CIRRUS_ALT: len(63),
+    CIRRUS_WEATHER_SCALE: (1 / (96 * S)).toFixed(8),
+    CIRRUS_NOISE_SCALE: (1 / (30 * S)).toFixed(8),
+    CIRRUS_STRETCH: "11.0",
+    CIRRUS_CURL_STRENGTH: "0.10",
+    CIRRUS_WIND_SPEED: "0.03",
+    CIRRUS_WIND_DIR: `vec2(${cirrusWind.x.toFixed(4)},${cirrusWind.y.toFixed(4)})`,
+    // Rotates the wind direction onto +x so the streak stretch axis and the
+    // scroll both live on one axis of the basis lookup frame.
+    CIRRUS_WIND_ROT: `mat2(${cirrusWind.x.toFixed(4)},${(-cirrusWind.y).toFixed(4)},${cirrusWind.y.toFixed(4)},${cirrusWind.x.toFixed(4)})`,
+    CIRRUS_COVERAGE: cirrusCoverage().toFixed(3),
+    CIRRUS_TYPE: cirrusType().toFixed(3),
+    CIRRUS_OPTICAL_DEPTH: "0.55",
+  } : {};
   const materialDefines = {
     ...densityDefines,
+    ...cirrusDefines,
     PRIMARY_STEPS: "160", LIGHT_STEPS: "8", LIGHT_STEP0: len(1), LIGHT_GROWTH: "1.6",
-    FAR_STEP_GROWTH: (cloudFarGrowth() / 6000).toFixed(8),
+    FAR_STEP_GROWTH: (cloudFarGrowth() / 9000).toFixed(8),
     ...(cloudLightReuse() ? { LIGHT_REUSE: "" } : {}),
     ...(ambientMode() === "coarse" ? { CLOUD_AMBIENT_COARSE: "" } : {}),
     ...(temporalMode !== "off" ? { CLOUD_TEMPORAL: "" } : {}),
@@ -107,6 +162,7 @@ export function createClouds(scene, skyUniforms, renderer, taa = null) {
   const fragmentShader = /* glsl */ `
     varying vec3 vDir;
     uniform float uMaskMode,uFrameIndex,uUpdatePhase,uDebugMode;
+    uniform sampler2D tCloudBlueNoise;
     uniform vec3 uSunDirection,uSunColor,uZenithColor,uHorizonColor,uGroundColor;
     uniform mat4 uCurrentViewProjection,uPreviousViewProjection;
     uniform float uTaaDeltaTime;
@@ -132,7 +188,7 @@ export function createClouds(scene, skyUniforms, renderer, taa = null) {
     }
     vec3 desat(vec3 c,float k){return mix(vec3(dot(c,LUMA)),c,k);}
     float hgPhase(float mu,float g){float g2=g*g;return(1.0-g2)/(12.5663706*pow(1.0+g2-2.0*g*mu,1.5));}
-    vec3 coarseAmbient(vec3 p,CloudSample cloudPoint,out float localDensity){
+    vec3 coarseAmbient(vec3 p,CloudSample cloudPoint,out float localDensity,out vec3 bounce){
       float stepLen=120.0;
       float up=coarseCloudDensity(p+vec3(0,stepLen,0));
       float down=coarseCloudDensity(p-vec3(0,stepLen,0));
@@ -147,8 +203,18 @@ export function createClouds(scene, skyUniforms, renderer, taa = null) {
       float trDown=exp(-down*stepLen*EXTINCTION*0.55);
       vec3 sky=desat(mix(uHorizonColor,uZenithColor,cloudPoint.height),0.35)*trUp;
       vec3 ground=desat(uGroundColor,0.28)*trDown*0.58;
-      return sky+ground+desat(mix(uZenithColor,uHorizonColor,0.72),0.25)*inscatter*0.42+vec3(0.10);
+      // Faked sun-off-ground bounce for the undersides. Returned separately
+      // so the caller can add it AFTER the direct-shadow collapse: bases sit
+      // at large sun optical depth, and inside the shade mix this term would
+      // be flattened to the same shadow tint as everything else. Downward
+      // openness (trDown) keeps it local: tufts over open air glow, crevices
+      // above other cloud stay dark.
+      float sunUp=clamp(normalize(uSunDirection).y*1.8,0.0,1.0);
+      bounce=desat(mix(uGroundColor,uSunColor,0.40),0.35)
+        *(0.82*trDown*pow(clamp(1.0-cloudPoint.height,0.0,1.0),1.5)*sunUp);
+      return (sky+ground+desat(mix(uZenithColor,uHorizonColor,0.72),0.25)*inscatter*0.42)*0.82+vec3(0.05);
     }
+    ${CLOUD_CIRRUS_GLSL}
 
     void main(){
       #ifdef CLOUD_INTERLEAVED
@@ -191,13 +257,19 @@ export function createClouds(scene, skyUniforms, renderer, taa = null) {
         #endif
       }
       vec3 skyBehind=skyColor(dir,sd,uZenithColor,uHorizonColor,uGroundColor,uSunColor);
-      float jitter=fract(cloudHash13(vec3(gl_FragCoord.xy,0.0))+uFrameIndex*0.61803398875);
+      // Void-and-cluster blue-noise march offsets (animated by golden-ratio
+      // frame phase): the sampling error lands in frequencies the temporal
+      // clamp and TAA absorb, instead of white-noise sparkle.
+      float jitter=fract(texelFetch(tCloudBlueNoise,ivec2(gl_FragCoord.xy)&63,0).r+uFrameIndex*0.61803398875);
       float mu=dot(dir,sd),airMass=1.0-0.7*max(dir.y,0.0);
-      float baseStep=(t1-t0)/float(PRIMARY_STEPS),fineStep=baseStep*0.5,coarseStep=baseStep*2.0;
+      // Coarse stride capped at 1.4x: at 2x a far coarse step could leap
+      // clean over a whole 100-300 unit clump, making it flicker with the
+      // per-frame jitter phase in a way no history accumulation can fix.
+      float baseStep=(t1-t0)/float(PRIMARY_STEPS),fineStep=baseStep*0.5,coarseStep=baseStep*1.4;
       float tStart=t0+jitter*fineStep,t=tStart;bool fine=false;int emptyRun=0;
       vec3 scattered=vec3(0);float transmittance=1.0,distanceSum=0.0,motionWeight=0.0,densitySum=0.0;
-      float debugValue=0.0,debugWeight=0.0,cachedOd=0.0,cachedCoarse=0.0;vec3 cachedAmbient=vec3(0);int odAge=99,ambientAge=99;
-      vec3 shadowTintBase=desat(mix(uZenithColor,uHorizonColor,0.62),0.7)*1.15;
+      float debugValue=0.0,debugWeight=0.0,cachedOd=0.0,cachedCoarse=0.0;vec3 cachedAmbient=vec3(0),cachedBounce=vec3(0);int odAge=99,ambientAge=99;
+      vec3 shadowTintBase=desat(mix(uZenithColor,uHorizonColor,0.62),0.30)*0.42;
       for(int i=0;i<PRIMARY_STEPS;i++){
         if(t>t1||transmittance<0.02)break;vec3 p=eye+dir*t;float stepScale=1.0+t*FAR_STEP_GROWTH;
         if(!fine){
@@ -211,7 +283,7 @@ export function createClouds(scene, skyUniforms, renderer, taa = null) {
           if(probe.density<=0.004){t+=coarseStep*stepScale;continue;}
           t=max(t-(coarseStep-fineStep)*stepScale,tStart);fine=true;emptyRun=0;odAge=ambientAge=99;continue;
         }
-        float stepLen=fineStep*stepScale;CloudSample cloudPoint=sampleCloudDensity(p,5,true);float d=cloudPoint.density;
+        float stepLen=fineStep*stepScale;float detailFade=1.0-smoothstep(DETAIL_FADE_START,DETAIL_FADE_END,t);CloudSample cloudPoint=sampleCloudDensityLod(p,5,true,detailFade);float d=cloudPoint.density;
         if(d<=0.004){emptyRun++;if(emptyRun>=4)fine=false;t+=stepLen;continue;}emptyRun=0;
         float sampleExt=d*EXTINCTION*stepLen;float contribution=transmittance*(1.0-exp(-sampleExt));
         distanceSum+=contribution*t;motionWeight+=contribution;densitySum+=contribution*d;
@@ -221,26 +293,73 @@ export function createClouds(scene, skyUniforms, renderer, taa = null) {
         #else
           float od=lightOpticalDepth(p,LIGHT_STEPS);
         #endif
+        // Short-range self-shadow at full detail frequency, never cached:
+        // the coarse light march cannot see billow-scale density, so without
+        // this every clump shades identically and the surface reads flat.
+        // Differential form — only density in excess of the local sample
+        // (a crevice behind an overhang) casts near shadow; an exposed
+        // sun-facing billow stays bright even deep inside a dense mass.
+        // Kept gentle and distance-faded: at full strength this term flips
+        // pixels between lit and shadowed at detail frequency, which reads
+        // as salt-and-pepper stipple on sunlit faces.
+        float nbr=sampleCloudDensityLod(p+sd*(NEAR_SHADOW_STEP*0.6),5,true,detailFade).density;
+        od+=clamp(nbr-d*0.6,0.0,0.9)*NEAR_SHADOW_STEP*EXTINCTION*0.6*(0.35+0.65*detailFade);
         float sun=0.0,ext=1.0,att=1.0;for(int j=0;j<3;j++){sun+=att*hgPhase(mu,0.55*pow(0.5,float(j)))*exp(-od*ext);ext*=0.55;att*=0.55;}
-        sun+=0.08*hgPhase(mu,0.85)*exp(-od*0.5);float powder=1.0-exp(-od*2.0);sun*=mix(1.0,powder,0.6*(0.5-0.5*mu));
+        sun+=0.08*hgPhase(mu,0.85)*exp(-od*0.5);
+        // Nubis-style long-reach term: a weak, broad lobe with a quarter-rate
+        // Beer exponent keeps thick interiors glowing instead of flat-ambient.
+        sun+=0.15*hgPhase(mu,0.30)*exp(-od*0.22);float powder=1.0-exp(-od*2.0);sun*=mix(1.0,powder,0.6*(0.5-0.5*mu));
         #ifdef CLOUD_AMBIENT_COARSE
-          if(ambientAge>=2){cachedAmbient=coarseAmbient(p,cloudPoint,cachedCoarse);ambientAge=0;}ambientAge++;vec3 ambient=cachedAmbient;
+          if(ambientAge>=2){cachedAmbient=coarseAmbient(p,cloudPoint,cachedCoarse,cachedBounce);ambientAge=0;}ambientAge++;vec3 ambient=cachedAmbient;
         #else
           float hf=cloudPoint.height;vec3 ambient=desat(mix(uHorizonColor,uZenithColor,hf),0.35)*0.9+vec3(0.12)+vec3(0.30)*hf+vec3(0.42,0.50,0.62)*(1.0-hf);cachedCoarse=d;
         #endif
         float shade=exp(-od*0.9);vec3 shadowTint=shadowTintBase*mix(1.0,0.86,cloudPoint.tower);ambient=mix(shadowTint,ambient,shade);
-        vec3 luminance=ambient+uSunColor*sun*2.6;float haze=1.0-exp(-t*airMass/HAZE_DIST);luminance=mix(luminance,skyBehind,haze);
+        // Bounce added outside the shade mix so it survives on shadowed
+        // bases; the soft od term varies it with the same optical depth
+        // (including the near-shadow differential) that shades the sun term,
+        // which is what puts texture back into the undersides.
+        ambient+=cachedBounce*mix(0.22,1.0,exp(-od*0.30));
+        vec3 luminance=ambient+uSunColor*sun*2.4;float haze=1.0-exp(-t*airMass/HAZE_DIST);luminance=mix(luminance,skyBehind,haze);
         scattered+=contribution*luminance;transmittance*=exp(-sampleExt);t+=stepLen;
         debugWeight+=contribution; if(uDebugMode==6.0)debugValue=max(debugValue,cachedCoarse); if(uDebugMode==10.0)debugValue=max(debugValue,dot(ambient,LUMA));
       }
+      // The cirrus layer sits behind and above everything the march covered,
+      // so its lit color is attenuated by the remaining transmittance and it
+      // folds into scattered/transmittance before opacity/alpha — every
+      // downstream path (mask, premultiplied, straight-alpha) is unchanged.
+      #ifdef CLOUD_CIRRUS
+        float cirrusAlpha=0.0;
+        if(transmittance>0.02||uDebugMode>=12.0){
+          float tC=cirrusIntersect(eye,dir);
+          if(tC>0.0){
+            CirrusSample cirrusPoint=cirrusField(eye.xz+dir.xz*tC);
+            if(uDebugMode==12.0)debugValue=cirrusPoint.coverage;
+            else if(uDebugMode==13.0)debugValue=cirrusPoint.density;
+            vec4 cirrus=cirrusApply(cirrusPoint,dir,tC,mu,airMass,skyBehind,uMaskMode>0.5);
+            scattered+=transmittance*cirrus.rgb;
+            transmittance*=1.0-cirrus.a;
+            cirrusAlpha=cirrus.a;
+          }
+        }
+      #endif
       float opacity=1.0-transmittance,alpha=opacity*horizonFade;
-      bool fieldDebug=uDebugMode>=1.0&&uDebugMode<=6.0||uDebugMode==10.0;
+      bool fieldDebug=uDebugMode>=1.0&&uDebugMode<=6.0||uDebugMode==10.0||uDebugMode>=12.0;
       // A transparent full-update sample is still current information. Only
       // the interleaved phase discard above marks a ray as not rendered.
       #ifndef CLOUD_TEMPORAL
         if(alpha<0.004&&!fieldDebug)discard;
       #endif
-      float cloudDistance=distanceSum/max(motionWeight,1e-5);vec3 world=eye+dir*cloudDistance;
+      float cloudDistance=distanceSum/max(motionWeight,1e-5);
+      // Cirrus stays out of the contribution-weighted distance: its 4k-60k
+      // unit intersections would blow past MAX_DIST and wreck the resolve's
+      // depth-validity test on mixed pixels. On cirrus-only pixels, though,
+      // motionWeight~0 would reproject the camera position itself; a far
+      // point is rotation-exact there and keeps meta.z stable at 1.0.
+      #ifdef CLOUD_CIRRUS
+        if(motionWeight<1e-4&&cirrusAlpha>0.004)cloudDistance=MAX_DIST;
+      #endif
+      vec3 world=eye+dir*cloudDistance;
       vec3 previousWorld=world;previousWorld.xz+=uTaaDeltaTime*(WIND_SPEED/NOISE_SCALE)*WIND_DIR;
       vec4 currentClip=uCurrentViewProjection*vec4(world,1),previousClip=uPreviousViewProjection*vec4(previousWorld,1);
       vec2 currentUv=currentClip.xy/max(currentClip.w,1e-6)*0.5+0.5;
@@ -301,13 +420,13 @@ export function createClouds(scene, skyUniforms, renderer, taa = null) {
 
   const densityUniforms = {
     uTime: uniforms.uTime, tCloudBaseNoise: uniforms.tCloudBaseNoise, tCloudDetailNoise: uniforms.tCloudDetailNoise,
-    uSunDirection: uniforms.uSunDirection,
+    tCloudCurlNoise: uniforms.tCloudCurlNoise, uSunDirection: uniforms.uSunDirection,
   };
   const shadows = createCloudShadows(renderer, densityUniforms, densityDefines, taa);
 
   if(divisor===0){
     scene.add(mesh);
-    return { mesh, uniforms, pass:null, shadows, noise:noiseResources, modes:{ profile:profileMode(),weather:weatherMode(),noise:activeNoise,temporal:"off",ambient:ambientMode(),shadows:shadows?.mode??"off",debug:DEBUG_MODES[debugMode()] }, reset(){shadows?.reset();taa?.reset();}, dispose(){shadows?.dispose();noiseResources?.dispose();mesh.geometry.dispose();mesh.material.dispose();} };
+    return { mesh, uniforms, pass:null, shadows, noise:noiseResources, modes:{ profile:profileMode(),weather:weatherMode(),noise:activeNoise,temporal:"off",ambient:ambientMode(),cirrus:cirrusOn,shadows:shadows?.mode??"off",debug:DEBUG_MODES[debugMode()] }, reset(){shadows?.reset();taa?.reset();}, dispose(){shadows?.dispose();noiseResources?.dispose();curlNoise.dispose();cirrusNoise?.dispose();mesh.geometry.dispose();mesh.material.dispose();} };
   }
 
   const cloudScene=new THREE.Scene();cloudScene.add(mesh);
@@ -318,7 +437,10 @@ export function createClouds(scene, skyUniforms, renderer, taa = null) {
     vertexShader:/* glsl */`varying vec2 vUv;void main(){vUv=uv;gl_Position=vec4(position.xy,0.99985,1.0);}`,
     fragmentShader:/* glsl */`uniform sampler2D tClouds,tCloudMeta,tCloudSignature;uniform float uDebugMode;varying vec2 vUv;${TAA_FRAGMENT_GLSL}
       void main(){vec4 c=texture2D(tClouds,vUv);vec4 m=texture2D(tCloudMeta,vUv);
-        if(uDebugMode==7.0)c=vec4(vec3(m.z),1.0);else if(uDebugMode==8.0)c=vec4(vec3(m.a),1.0);gl_FragColor=c;
+        if(uDebugMode==7.0)c=vec4(vec3(m.z),1.0);else if(uDebugMode==8.0)c=vec4(vec3(m.a),1.0);
+        // History confidence = mix(0.45,1,historyWeight): a non-invasive
+        // window onto temporal accumulation (reading it can't poison it).
+        else if(uDebugMode==11.0)c=vec4(vec3(texture2D(tCloudSignature,vUv).g),1.0);gl_FragColor=c;
         #ifdef TAA_ENABLED
           vec3 globalData=m.xyz;
           #ifdef CLOUD_COMPOSITE_TEMPORAL
@@ -379,6 +501,6 @@ export function createClouds(scene, skyUniforms, renderer, taa = null) {
     dispose(){rawTarget?.dispose();temporal?.dispose();compositeMaterial.dispose();compositeQuad.geometry.dispose();},
   };
   pass.resize();
-  const rig={mesh,uniforms,pass,shadows,noise:noiseResources,modes:{profile:profileMode(),weather:weatherMode(),noise:activeNoise,temporal:temporalMode,ambient:ambientMode(),shadows:shadows?.mode??"off",debug:DEBUG_MODES[debugMode()]},reset(){pass.reset();shadows?.reset();taa?.reset();},dispose(){pass.dispose();shadows?.dispose();noiseResources?.dispose();mesh.geometry.dispose();mesh.material.dispose();}};
+  const rig={mesh,uniforms,pass,shadows,noise:noiseResources,modes:{profile:profileMode(),weather:weatherMode(),noise:activeNoise,temporal:temporalMode,ambient:ambientMode(),cirrus:cirrusOn,shadows:shadows?.mode??"off",debug:DEBUG_MODES[debugMode()]},reset(){pass.reset();shadows?.reset();taa?.reset();},dispose(){pass.dispose();shadows?.dispose();noiseResources?.dispose();curlNoise.dispose();cirrusNoise?.dispose();mesh.geometry.dispose();mesh.material.dispose();}};
   return rig;
 }

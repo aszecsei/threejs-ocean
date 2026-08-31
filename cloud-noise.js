@@ -1,77 +1,10 @@
 import * as THREE from "three";
+import { blueNoiseRanks, curlField, invertedWorley, perlinFbm } from "./noise.js";
 
 // Deterministic CPU-baked, tileable cloud volumes. The base texture follows
 // the Perlin-Worley packing used by real-time cloud renderers; the detail
 // texture stores three increasing-frequency inverted Worley bands.
 const SEED = 0x51f15e;
-
-function hash3(x, y, z, seed = SEED) {
-  let h = (x * 374761393 + y * 668265263 + z * 2147483647 + seed) | 0;
-  h = Math.imul(h ^ (h >>> 13), 1274126177);
-  return (h ^ (h >>> 16)) >>> 0;
-}
-
-function fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
-function lerp(a, b, t) { return a + (b - a) * t; }
-function wrap(i, period) { return ((i % period) + period) % period; }
-
-const GRADIENTS = [
-  [1, 1, 0], [-1, 1, 0], [1, -1, 0], [-1, -1, 0],
-  [1, 0, 1], [-1, 0, 1], [1, 0, -1], [-1, 0, -1],
-  [0, 1, 1], [0, -1, 1], [0, 1, -1], [0, -1, -1],
-];
-
-function gradientDot(ix, iy, iz, x, y, z, period, seed) {
-  const g = GRADIENTS[hash3(wrap(ix, period), wrap(iy, period), wrap(iz, period), seed) % GRADIENTS.length];
-  return g[0] * (x - ix) + g[1] * (y - iy) + g[2] * (z - iz);
-}
-
-function perlin(x, y, z, period, seed) {
-  const x0 = Math.floor(x), y0 = Math.floor(y), z0 = Math.floor(z);
-  const u = fade(x - x0), v = fade(y - y0), w = fade(z - z0);
-  const n000 = gradientDot(x0, y0, z0, x, y, z, period, seed);
-  const n100 = gradientDot(x0 + 1, y0, z0, x, y, z, period, seed);
-  const n010 = gradientDot(x0, y0 + 1, z0, x, y, z, period, seed);
-  const n110 = gradientDot(x0 + 1, y0 + 1, z0, x, y, z, period, seed);
-  const n001 = gradientDot(x0, y0, z0 + 1, x, y, z, period, seed);
-  const n101 = gradientDot(x0 + 1, y0, z0 + 1, x, y, z, period, seed);
-  const n011 = gradientDot(x0, y0 + 1, z0 + 1, x, y, z, period, seed);
-  const n111 = gradientDot(x0 + 1, y0 + 1, z0 + 1, x, y, z, period, seed);
-  return lerp(lerp(lerp(n000, n100, u), lerp(n010, n110, u), v),
-              lerp(lerp(n001, n101, u), lerp(n011, n111, u), v), w);
-}
-
-function perlinFbm(x, y, z, period, seed) {
-  let sum = 0, norm = 0, amp = 1, frequency = 1;
-  for (let octave = 0; octave < 3; octave++) {
-    sum += amp * perlin(x * frequency, y * frequency, z * frequency, period * frequency, seed + octave * 977);
-    norm += amp;
-    amp *= 0.5;
-    frequency *= 2;
-  }
-  return Math.max(0, Math.min(1, 0.5 + 0.5 * sum / norm));
-}
-
-function feature(cellX, cellY, cellZ, period, seed) {
-  const x = wrap(cellX, period), y = wrap(cellY, period), z = wrap(cellZ, period);
-  return [
-    (hash3(x, y, z, seed) & 1023) / 1024,
-    (hash3(x, y, z, seed + 1013) & 1023) / 1024,
-    (hash3(x, y, z, seed + 2027) & 1023) / 1024,
-  ];
-}
-
-function invertedWorley(x, y, z, period, seed) {
-  const cx = Math.floor(x), cy = Math.floor(y), cz = Math.floor(z);
-  let nearest = 3;
-  for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-    const f = feature(cx + dx, cy + dy, cz + dz, period, seed);
-    const px = cx + dx + f[0], py = cy + dy + f[1], pz = cz + dz + f[2];
-    const qx = x - px, qy = y - py, qz = z - pz;
-    nearest = Math.min(nearest, qx * qx + qy * qy + qz * qz);
-  }
-  return Math.max(0, Math.min(1, 1 - Math.sqrt(nearest) / 1.15));
-}
 
 function makeTexture(size, detail) {
   const data = new Uint8Array(size * size * size * 4);
@@ -91,7 +24,22 @@ function makeTexture(size, detail) {
       // connected bodies instead of quantizing mostly to empty space.
       const p = Math.min(1, perlinFbm(u * 4, v * 4, w * 4, 4, SEED + 41) * 0.72 + 0.28);
       const pw = Math.max(0, Math.min(1, (p - (1 - bands[0])) / Math.max(bands[0], 1e-4)));
-      data[i++] = Math.round(pw * 255);
+      // Dilate by the Worley fBm (billowed silhouette), in float precision —
+      // doing these remaps in the shader stretches 8-bit steps into visible
+      // terracing. The dilated signal occupies roughly [0.33, 0.83]
+      // (measured), so stretch that band to the full [0, 1] range: without
+      // the stretch the density threshold saturates wherever the profile
+      // envelope is strong and clouds render as flat envelope-shaped slabs.
+      // Weighted toward the higher bands so the dilation imprints clusters
+      // of small billows on the silhouette, not one large-cell outline.
+      const wfbm = 0.45 * bands[0] + 0.33 * bands[1] + 0.22 * bands[2];
+      const dilated = Math.max(0, Math.min(1, (pw - (wfbm - 1)) / (2 - wfbm)));
+      // Gentler stretch than the original (dilated-0.4)/0.4: that steep remap
+      // made R nearly binary in space, leaving only a thin 0<d<1 shell for
+      // erosion to sculpt — clouds read as solid puffballs with shaved skins.
+      // The wider band gives broad translucent fringes the erosion can shred.
+      const shaped = Math.max(0, Math.min(1, (dilated - 0.33) / 0.5));
+      data[i++] = Math.round(shaped * 255);
       data[i++] = Math.round(bands[0] * 255);
       data[i++] = Math.round(bands[1] * 255);
       data[i++] = Math.round(bands[2] * 255);
@@ -110,6 +58,88 @@ function makeTexture(size, detail) {
   return texture;
 }
 
+// Tileable 2D curl-noise texture (HZD-style turbulence). RGB carries a
+// divergence-free XY offset plus an independent vertical component, encoded
+// as 0.5 + 0.5 * v / maxAmplitude so the shader decodes with *2-1.
+export function createCurlNoiseTexture(size = 128) {
+  const field = curlField(size, 6, SEED + 9013);
+  let maxAmp = 1e-4;
+  for (let i = 0; i < field.length; i++) maxAmp = Math.max(maxAmp, Math.abs(field[i]));
+  const data = new Uint8Array(size * size * 4);
+  for (let i = 0, j = 0; i < field.length; i += 3, j += 4) {
+    data[j] = Math.round((0.5 + 0.5 * field[i] / maxAmp) * 255);
+    data[j + 1] = Math.round((0.5 + 0.5 * field[i + 1] / maxAmp) * 255);
+    data[j + 2] = Math.round((0.5 + 0.5 * field[i + 2] / maxAmp) * 255);
+    data[j + 3] = 255;
+  }
+  const texture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.UnsignedByteType);
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  texture.colorSpace = THREE.NoColorSpace;
+  texture.generateMipmaps = false;
+  texture.needsUpdate = true;
+  texture.name = "CloudNoise.curl" + size;
+  return texture;
+}
+
+// Tileable 2D cirrus basis texture. The bake is isotropic — the wind-aligned
+// stretch happens in the shader's UV transform so RepeatWrapping keeps the
+// result tileable under any affine warp. Channels follow the HFW 2.5-D model:
+// R = streaky source, G = wispy source (pre-curled by a curl-field domain
+// warp), B = round source (inverted Worley), A = very-low-frequency regional
+// influence so streak systems vary across the sky instead of tiling globally.
+// Contrast shaping runs in float precision here for the same terracing
+// reason documented on the base texture above.
+export function createCirrusNoiseTexture(size = 256) {
+  const fbm = (u, v) =>
+    perlinFbm(u * 4, v * 4, 1.37 * 4, 4, SEED + 7411) * 0.6 +
+    perlinFbm(u * 16, v * 16, 0.61 * 16, 16, SEED + 7907) * 0.4;
+  const shape = (v, lo, hi) => {
+    const t = Math.max(0, Math.min(1, (v - lo) / (hi - lo)));
+    return t * t * (3 - 2 * t);
+  };
+  const warp = curlField(size, 4, SEED + 8317);
+  let maxAmp = 1e-4;
+  for (let i = 0; i < warp.length; i++) maxAmp = Math.max(maxAmp, Math.abs(warp[i]));
+  const data = new Uint8Array(size * size * 4);
+  for (let y = 0, i = 0, j = 0; y < size; y++) for (let x = 0; x < size; x++, i += 3, j += 4) {
+    const u = x / size, v = y / size;
+    const wu = u + (warp[i] / maxAmp) * 0.06, wv = v + (warp[i + 1] / maxAmp) * 0.06;
+    data[j] = Math.round(shape(fbm(u, v), 0.35, 0.75) * 255);
+    data[j + 1] = Math.round(shape(fbm(wu, wv), 0.32, 0.78) * 255);
+    data[j + 2] = Math.round(invertedWorley(u * 6, v * 6, 2.37, 6, SEED + 8923) * 255);
+    data[j + 3] = Math.round(perlinFbm(u * 2, v * 2, 0.83 * 2, 2, SEED + 9403) * 255);
+  }
+  const texture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.UnsignedByteType);
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  texture.colorSpace = THREE.NoColorSpace;
+  texture.generateMipmaps = false;
+  texture.needsUpdate = true;
+  texture.name = "CloudNoise.cirrus" + size;
+  return texture;
+}
+
+// Void-and-cluster blue-noise jitter texture for the ray-march offsets.
+// Blue noise pushes the sampling error into frequencies the temporal
+// neighborhood clamp and TAA absorb far better than white noise.
+export function createBlueNoiseTexture(size = 64) {
+  const ranks = blueNoiseRanks(size, SEED + 40787);
+  const data = new Uint8Array(size * size);
+  for (let i = 0; i < ranks.length; i++) data[i] = Math.round(ranks[i] * 255);
+  const texture = new THREE.DataTexture(data, size, size, THREE.RedFormat, THREE.UnsignedByteType);
+  texture.minFilter = THREE.NearestFilter;
+  texture.magFilter = THREE.NearestFilter;
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  texture.colorSpace = THREE.NoColorSpace;
+  texture.generateMipmaps = false;
+  texture.needsUpdate = true;
+  texture.name = "CloudNoise.blue" + size;
+  return texture;
+}
+
 export function cloudNoiseSupported(renderer) {
   if (!renderer?.capabilities?.isWebGL2) return false;
   const gl = renderer.getContext();
@@ -120,10 +150,15 @@ export function createCloudNoiseTextures(renderer) {
   if (!cloudNoiseSupported(renderer)) return null;
   const started = performance.now();
   try {
-    const base = makeTexture(64, false);
-    const detail = makeTexture(32, true);
-    base.name = "CloudNoise.base64";
-    detail.name = "CloudNoise.detail32";
+    const gl = renderer.getContext();
+    const highRes = gl.getParameter(gl.MAX_3D_TEXTURE_SIZE) >= 128;
+    const baseSize = highRes ? 128 : 64;
+    const detailSize = highRes ? 64 : 32;
+    const base = makeTexture(baseSize, false);
+    const detail = makeTexture(detailSize, true);
+    base.name = "CloudNoise.base" + baseSize;
+    detail.name = "CloudNoise.detail" + detailSize;
+    console.info(`Cloud noise baked at ${baseSize}³/${detailSize}³ in ${(performance.now() - started).toFixed(0)} ms`);
     return {
       base,
       detail,
