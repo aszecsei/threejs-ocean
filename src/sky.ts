@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { TAA_FRAGMENT_GLSL, taaMaterialConfig } from "./taa.js";
+import { TAA_FRAGMENT_GLSL, taaMaterialConfig, type TaaHandle } from "./taa.js";
 
 // --- Sky palette ----------------------------------------------------------
 // Shared sRGB hex values. Under the scattering model these are no longer the
@@ -17,7 +17,30 @@ import { TAA_FRAGMENT_GLSL, taaMaterialConfig } from "./taa.js";
 // after tone mapping. Do not push the horizon gain much higher: a hot blue
 // channel bleeds through the ACES matrices and bleaches everything that
 // reflects it (the ocean went white at ~3x).
-export const SKY_PALETTE = {
+/** Authored sky colors, pre-gain, as hex. */
+export interface SkyPalette {
+  zenith: number;
+  horizon: number;
+  ground: number;
+  sun: number;
+}
+
+/** {@link SKY_PALETTE} after gain, as linear HDR colors. */
+export interface GradedPalette {
+  zenith: THREE.Color;
+  horizon: THREE.Color;
+  ground: THREE.Color;
+  sun: THREE.Color;
+}
+
+/** Colors the rest of the scene derives from the sky (fog, lights, background). */
+export interface SceneColors {
+  horizon: THREE.Color;
+  zenith: THREE.Color;
+  ground: THREE.Color;
+}
+
+export const SKY_PALETTE: SkyPalette = {
   zenith: 0x1955a6,
   horizon: 0x2289ff,
   ground: 0xbfe4f5, // bright sea-tone below the horizon
@@ -105,11 +128,11 @@ const REF_PERP = new THREE.Vector3(-DEFAULT_SUN.z, 0, DEFAULT_SUN.x).normalize()
 export const GRADE_LUT_SIZE = 256;
 
 // GLSL float literal: always carries a decimal point or exponent.
-const glslFloat = (x) => {
+const glslFloat = (x: number) => {
   const s = x.toPrecision(12);
   return /[.e]/.test(s) ? s : `${s}.0`;
 };
-const glslVec3 = (v) => `vec3(${v.map(glslFloat).join(", ")})`;
+const glslVec3 = (v: readonly number[]) => `vec3(${v.map(glslFloat).join(", ")})`;
 const constDecls = Object.entries(SKY_CONSTS)
   .map(([k, v]) => `  const float ${k} = ${glslFloat(v)};`)
   .join("\n");
@@ -217,11 +240,11 @@ ${constDecls}
 // derivation of fog / background / light colors. Returns a linear THREE.Color.
 const clamp = THREE.MathUtils.clamp;
 const smoothstep = THREE.MathUtils.smoothstep;
-const mixv = (a, b, t) => a.map((x, i) => x + (b[i] - x) * t);
-const luma = (c) => c[0] * LUMA[0] + c[1] * LUMA[1] + c[2] * LUMA[2];
-const colorArr = (hex) => { const c = new THREE.Color(hex); return [c.r, c.g, c.b]; };
+const mixv = (a: number[], b: number[], t: number): number[] => a.map((x, i) => x + (b[i] - x) * t);
+const luma = (c: number[]) => c[0] * LUMA[0] + c[1] * LUMA[1] + c[2] * LUMA[2];
+const colorArr = (hex: THREE.ColorRepresentation): number[] => { const c = new THREE.Color(hex); return [c.r, c.g, c.b]; };
 
-function skyPhysicalJS(dir, sunDir, sunArr, halo) {
+function skyPhysicalJS(dir: THREE.Vector3, sunDir: THREE.Vector3, sunArr: number[], halo: number) {
   const K = SKY_CONSTS;
   const sy = clamp(sunDir.y, -1, 1);
   const sunE = K.SUN_EE * Math.max(0, 1 - Math.exp(-((K.SUN_CUTOFF - Math.acos(sy)) / K.SUN_STEEPNESS)));
@@ -255,7 +278,7 @@ function skyPhysicalJS(dir, sunDir, sunArr, halo) {
 }
 
 // Palette as the shader / mirror consume it: linear HDR, pre-ACES.
-export function gradePalette(palette = SKY_PALETTE, gain = PALETTE_GAIN) {
+export function gradePalette(palette: SkyPalette = SKY_PALETTE, gain = PALETTE_GAIN): GradedPalette {
   return {
     zenith: new THREE.Color(palette.zenith).multiplyScalar(gain.zenith),
     horizon: new THREE.Color(palette.horizon).multiplyScalar(gain.horizon),
@@ -271,7 +294,7 @@ export function gradePalette(palette = SKY_PALETTE, gain = PALETTE_GAIN) {
 // and never regenerated. Texel i sits at u = i/(N-1) on the pow(cosZ, 0.55)
 // axis, matching the half-texel mapping in the GLSL sampler.
 const _lutDir = new THREE.Vector3();
-export function createGradeLUT(sunDir, palette = SKY_PALETTE) {
+export function createGradeLUT(sunDir: THREE.Vector3, palette: SkyPalette = SKY_PALETTE): THREE.DataTexture {
   const K = SKY_CONSTS;
   const P = gradePalette(palette);
   const sunArr = colorArr(P.sun);
@@ -302,7 +325,7 @@ export function createGradeLUT(sunDir, palette = SKY_PALETTE) {
 }
 
 const _refDir = new THREE.Vector3();
-export function sampleSkyColor(dir, sunDir, palette = SKY_PALETTE) {
+export function sampleSkyColor(dir: THREE.Vector3, sunDir: THREE.Vector3, palette: SkyPalette = SKY_PALETTE): THREE.Color {
   const K = SKY_CONSTS;
   const P = gradePalette(palette);
   const sunArr = colorArr(P.sun);
@@ -325,7 +348,7 @@ export function sampleSkyColor(dir, sunDir, palette = SKY_PALETTE) {
 
 // Scene-level colors derived from the sky: averaged just-above-horizon color
 // (fog, background, hemisphere sky), straight-up color, and the ground fill.
-export function deriveSceneColors(sunDir) {
+export function deriveSceneColors(sunDir: THREE.Vector3): SceneColors {
   const horizon = new THREE.Color(0, 0, 0);
   const n = 16;
   const d = new THREE.Vector3();
@@ -342,7 +365,7 @@ export function deriveSceneColors(sunDir) {
 
 // --- Procedural sky -------------------------------------------------------
 // Scattering sky rendered on an inverted sphere that follows the camera.
-export function createSky(scene, sunDir, taa = null) {
+export function createSky(scene: THREE.Scene, sunDir: THREE.Vector3, taa: TaaHandle | null = null) {
   const P = gradePalette();
   const lut = skyLutEnabled() ? createGradeLUT(sunDir) : null;
   const uniforms = {
@@ -440,3 +463,6 @@ export function createSky(scene, sunDir, taa = null) {
 
   return { mesh, uniforms };
 }
+
+/** The sky rig returned by {@link createSky}. */
+export type SkyRig = ReturnType<typeof createSky>;

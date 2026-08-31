@@ -6,7 +6,7 @@ import { blueNoiseRanks, curlField, invertedWorley, perlinFbm } from "./noise.js
 // texture stores three increasing-frequency inverted Worley bands.
 const SEED = 0x51f15e;
 
-function makeTexture(size, detail) {
+function makeTexture(size: number, detail: boolean): THREE.Data3DTexture {
   const data = new Uint8Array(size * size * size * 4);
   let i = 0;
   const basePeriods = detail ? [4, 8, 12] : [4, 8, 12];
@@ -92,10 +92,10 @@ export function createCurlNoiseTexture(size = 128) {
 // Contrast shaping runs in float precision here for the same terracing
 // reason documented on the base texture above.
 export function createCirrusNoiseTexture(size = 256) {
-  const fbm = (u, v) =>
+  const fbm = (u: number, v: number) =>
     perlinFbm(u * 4, v * 4, 1.37 * 4, 4, SEED + 7411) * 0.6 +
     perlinFbm(u * 16, v * 16, 0.61 * 16, 16, SEED + 7907) * 0.4;
-  const shape = (v, lo, hi) => {
+  const shape = (v: number, lo: number, hi: number) => {
     const t = Math.max(0, Math.min(1, (v - lo) / (hi - lo)));
     return t * t * (3 - 2 * t);
   };
@@ -140,17 +140,31 @@ export function createBlueNoiseTexture(size = 64) {
   return texture;
 }
 
-export function cloudNoiseSupported(renderer) {
+export function cloudNoiseSupported(
+  renderer: THREE.WebGLRenderer | null | undefined
+): renderer is THREE.WebGLRenderer {
   if (!renderer?.capabilities?.isWebGL2) return false;
-  const gl = renderer.getContext();
+  // isWebGL2 above is the runtime guarantee; getContext() is typed as the
+  // WebGL1|WebGL2 union, so narrow it to reach MAX_3D_TEXTURE_SIZE.
+  const gl = renderer.getContext() as WebGL2RenderingContext;
   return gl.getParameter(gl.MAX_3D_TEXTURE_SIZE) >= 64;
 }
 
-export function createCloudNoiseTextures(renderer) {
+/** The baked 3D noise pair, or null when the GPU cannot host it. */
+export interface CloudNoiseTextures {
+  base: THREE.Data3DTexture;
+  detail: THREE.Data3DTexture;
+  generationMs: number;
+  dispose(): void;
+}
+
+export function createCloudNoiseTextures(
+  renderer: THREE.WebGLRenderer | null | undefined
+): CloudNoiseTextures | null {
   if (!cloudNoiseSupported(renderer)) return null;
   const started = performance.now();
   try {
-    const gl = renderer.getContext();
+    const gl = renderer.getContext() as WebGL2RenderingContext;
     const highRes = gl.getParameter(gl.MAX_3D_TEXTURE_SIZE) >= 128;
     const baseSize = highRes ? 128 : 64;
     const detailSize = highRes ? 64 : 32;

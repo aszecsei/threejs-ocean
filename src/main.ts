@@ -6,9 +6,12 @@ import { attachCloudShadow } from "./cloud-shadows.js";
 import { oceanEnabled, oceanSize, createOcean, sampleSwell, createSceneCapture } from "./ocean.js";
 import { raysStrength, createGodRays } from "./godrays.js";
 import { bloomStrength, createPostPipeline } from "./post.js";
+import type { OceanRig, SceneCapture } from "./ocean.js";
+import type { DemoHandle } from "./core/demo-handle.js";
 
-const canvas = document.getElementById("scene");
+const canvas = document.getElementById("scene") as HTMLCanvasElement | null;
 const hudStats = document.getElementById("hud-stats");
+if (!canvas) throw new Error("#scene canvas is missing from the document");
 
 // `?dpr=<x>` overrides the device pixel ratio (diagnostic lever for perf
 // attribution, e.g. `?dpr=1`; not a quality setting -- never a default).
@@ -62,7 +65,7 @@ controls.target.set(0, 0.8, 0);
 
 // Debug/test handle: lets external tooling (playwright-cli eval) steer the
 // camera and poke at the scene without reaching into module scope.
-window.__demo = {
+const demo: DemoHandle = {
   scene, camera, controls, renderer, post, taa: post.taa,
   get clouds() { return cloudRig; },
   get ocean() { return ocean; },
@@ -88,6 +91,7 @@ window.__demo = {
     cloudRig?.reset();
   },
 };
+window.__demo = demo;
 
 // --- Sky & clouds -------------------------------------------------------
 const sky = createSky(scene, sunDir, post.taa);
@@ -101,12 +105,12 @@ const godRays = rays > 0 ? createGodRays(renderer, camera, scene, sky, cloudRig,
 
 // --- Ocean (replaces the ground grid) -----------------------------------
 // `?ocean=0` falls back to the flat grid for sky-only / perf A/B checks.
-let ocean = null;
-let grid = null;
+let ocean: OceanRig | null = null;
+let grid: THREE.GridHelper | null = null;
 // Screen-space reflections: everything except the ocean is rendered into a
 // color+depth target first; the ocean shader marches its reflection rays
 // against that depth buffer. See createSceneCapture in ocean.js.
-let capture = null;
+let capture: SceneCapture | null = null;
 if (oceanEnabled()) {
   ocean = createOcean(scene, sky.uniforms, renderer, {
     size: oceanSize(),
@@ -155,7 +159,7 @@ post.taa.trackObject(knot);
 // Bounding-sphere radius for the ocean's SSR march gate (rotation does not
 // change it; a small margin covers filtering slop).
 knot.geometry.computeBoundingSphere();
-const knotBoundRadius = knot.geometry.boundingSphere.radius * 1.15;
+const knotBoundRadius = knot.geometry.boundingSphere!.radius * 1.15;
 
 // --- Resize handling ----------------------------------------------------
 function onResize() {
@@ -180,7 +184,7 @@ function disposeDemo() {
   post.dispose();
   renderer.dispose();
 }
-window.__demo.dispose = disposeDemo;
+demo.dispose = disposeDemo;
 window.addEventListener("pagehide", disposeDemo, { once: true });
 
 // --- Animation loop -----------------------------------------------------
@@ -192,7 +196,7 @@ let fpsTimer = 0;
 // tooling can drive the demo on a synthetic clock -- with the real clock the
 // cloud field, FFT swell and TAA history all land at a different phase on
 // every run, which swamps screenshot comparison. See __demo.stepFrames.
-function frame(dt, t) {
+function frame(dt: number, t: number) {
   // Drive the FFT simulation and rebind its ping-ponged textures.
   if (ocean) ocean.update(dt, t);
 
@@ -253,7 +257,7 @@ function frame(dt, t) {
   if (fpsTimer >= 0.5) {
     const fps = Math.round(frames / fpsTimer);
     const dpr = renderer.getPixelRatio();
-    hudStats.textContent = `${fps} fps · ${Math.round(window.innerWidth * dpr)}×${Math.round(window.innerHeight * dpr)} px`;
+    if (hudStats) hudStats.textContent = `${fps} fps · ${Math.round(window.innerWidth * dpr)}×${Math.round(window.innerHeight * dpr)} px`;
     frames = 0;
     fpsTimer = 0;
   }

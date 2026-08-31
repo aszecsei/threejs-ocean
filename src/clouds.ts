@@ -1,9 +1,10 @@
 import * as THREE from "three";
 import { SKY_COLOR_GLSL } from "./sky.js";
-import { TAA_FRAGMENT_GLSL, taaMaterialConfig } from "./taa.js";
+import { TAA_FRAGMENT_GLSL, taaMaterialConfig, type TaaApi } from "./taa.js";
+import type { Uniform } from "./core/types.js";
 import { createBlueNoiseTexture, createCirrusNoiseTexture, createCloudNoiseTextures, createCurlNoiseTexture } from "./cloud-noise.js";
 import { CLOUD_CIRRUS_GLSL, CLOUD_DENSITY_GLSL } from "./cloud-density.glsl.js";
-import { cloudTemporalMode, createCloudTemporal } from "./cloud-temporal.js";
+import { cloudTemporalMode, createCloudTemporal, type CloudTemporal } from "./cloud-temporal.js";
 import { createCloudShadows } from "./cloud-shadows.js";
 
 export const CLOUD_SCALE = 60.0;
@@ -11,11 +12,13 @@ export const CLOUD_BOTTOM = 5.0 * CLOUD_SCALE;
 export const CLOUD_TOP = 15.0 * CLOUD_SCALE;
 export const TOWER_TOP = 33.0 * CLOUD_SCALE;
 
-function query(name, fallback) {
+function query(name: string, fallback: string): string;
+function query(name: string, fallback: null): string | null;
+function query(name: string, fallback: string | null): string | null {
   const value = new URLSearchParams(window.location.search).get(name);
   return value === null ? fallback : value;
 }
-function flagEnabled(name) {
+function flagEnabled(name: string): boolean {
   const value = query(name, null);
   return value === null || (value !== "0" && value !== "false");
 }
@@ -41,7 +44,7 @@ export function cloudMidBand() {
 
 // High-altitude 2.5-D cirrus layer (?cirrus=0 compiles it out entirely).
 export function cirrusEnabled() { return flagEnabled("cirrus"); }
-function cirrusParam(name, fallback) {
+function cirrusParam(name: string, fallback: number): number {
   const n = Number(query(name, String(fallback)));
   return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : fallback;
 }
@@ -59,7 +62,12 @@ function weatherMode() { return query("cloud-weather", "split") === "coupled" ? 
 function noiseMode() { return query("cloud-noise", "texture") === "procedural" ? "procedural" : "texture"; }
 function ambientMode() { return query("cloud-ambient", "coarse") === "legacy" ? "legacy" : "coarse"; }
 
-export function createClouds(scene, skyUniforms, renderer, taa = null) {
+export function createClouds(
+  scene: THREE.Scene,
+  skyUniforms: Record<string, Uniform<unknown>>,
+  renderer: THREE.WebGLRenderer,
+  taa: TaaApi | null = null
+) {
   const divisor = renderer ? cloudResDivisor() : 0;
   const requestedNoise = noiseMode();
   const noiseResources = requestedNoise === "texture" ? createCloudNoiseTextures(renderer) : null;
@@ -100,7 +108,7 @@ export function createClouds(scene, skyUniforms, renderer, taa = null) {
   };
 
   const S = CLOUD_SCALE;
-  const len = k => (k * S).toFixed(1);
+  const len = (k: number) => (k * S).toFixed(1);
   const densityDefines = {
     CLOUD_BOTTOM: CLOUD_BOTTOM.toFixed(1), CU_TOP: CLOUD_TOP.toFixed(1), CB_TOP: TOWER_TOP.toFixed(1),
     CU_HEIGHT: (CLOUD_TOP - CLOUD_BOTTOM).toFixed(1), MAX_DIST: len(160),
@@ -459,22 +467,27 @@ export function createClouds(scene, skyUniforms, renderer, taa = null) {
   });
   const compositeScene=new THREE.Scene(),compositeCamera=new THREE.OrthographicCamera(-1,1,1,-1,0,1);
   const compositeQuad=new THREE.Mesh(new THREE.PlaneGeometry(2,2),compositeMaterial);compositeQuad.frustumCulled=false;compositeScene.add(compositeQuad);
-  const size=new THREE.Vector2();let rawTarget=null,temporal=null,frameIndex=0,lastTime=0;
+  const size=new THREE.Vector2();
+  let rawTarget: THREE.WebGLRenderTarget | null = null;
+  let temporal: CloudTemporal | null = null;
+  let frameIndex=0,lastTime=0;
   const previousCameraPosition=new THREE.Vector3(),previousCameraQuaternion=new THREE.Quaternion(),previousProjection=new THREE.Matrix4();let cameraValid=false;
   const prevClearColor=new THREE.Color();
-  function makeRawTarget(w,h){
+  function makeRawTarget(w: number, h: number){
     const count=temporalMode!=="off"?3:(taa?.enabled?2:1);
     const target=new THREE.WebGLRenderTarget(w,h,{...(count>1?{count}:{}),type:THREE.HalfFloatType,minFilter:THREE.LinearFilter,magFilter:THREE.LinearFilter,depthBuffer:false,stencilBuffer:false});
     target.textures[0].name="Cloud.rawColor";if(count>1)target.textures[1].name="Cloud.rawMeta";if(count>2)target.textures[2].name="Cloud.rawSignature";return target;
   }
+  // rawTarget is null only between here and the pass.resize() call below,
+  // which runs during construction -- no member can observe it null.
   const pass={
     resize(){renderer.getDrawingBufferSize(size);const w=Math.max(1,Math.floor(size.x/divisor)),h=Math.max(1,Math.floor(size.y/divisor));rawTarget?.dispose();rawTarget=makeRawTarget(w,h);if(temporal)temporal.resize(w,h);else temporal=createCloudTemporal(renderer,temporalMode,w,h);cameraValid=false;},
-    get texture(){return temporal?.texture??rawTarget.texture;},
-    get motionTexture(){return temporal?.metaTexture??(rawTarget.textures[1]??null);},
-    get signatureTexture(){return temporal?.signatureTexture??(rawTarget.textures[2]??null);},
+    get texture(){return temporal?.texture??rawTarget!.texture;},
+    get motionTexture(){return temporal?.metaTexture??(rawTarget!.textures[1]??null);},
+    get signatureTexture(){return temporal?.signatureTexture??(rawTarget!.textures[2]??null);},
     get rawTarget(){return rawTarget;},
     get resolvedTarget(){return temporal;},
-    render(camera){
+    render(camera: THREE.PerspectiveCamera){
       const now=uniforms.uTime.value;ownDelta.value=Math.min(Math.max(now-lastTime,0),0.1);lastTime=now;
       camera.updateMatrixWorld();
       if(!taa?.enabled){ownCurrentVP.multiplyMatrices(camera.projectionMatrix,camera.matrixWorldInverse);if(!cameraValid)ownPreviousVP.copy(ownCurrentVP);}
@@ -491,12 +504,12 @@ export function createClouds(scene, skyUniforms, renderer, taa = null) {
       uniforms.uFrameIndex.value=frameIndex;uniforms.uUpdatePhase.value=frameIndex%4;
       const previousTarget=renderer.getRenderTarget();renderer.getClearColor(prevClearColor);const previousAlpha=renderer.getClearAlpha();
       renderer.setRenderTarget(rawTarget);renderer.setClearColor(0,0);renderer.clear();renderer.render(cloudScene,camera);
-      if(temporal)temporal.resolve(rawTarget);
+      if(temporal&&rawTarget)temporal.resolve(rawTarget);
       renderer.setClearColor(prevClearColor,previousAlpha);renderer.setRenderTarget(previousTarget);
       if(!taa?.enabled)ownPreviousVP.copy(ownCurrentVP);
       previousCameraPosition.copy(camera.position);previousCameraQuaternion.copy(camera.quaternion);previousProjection.copy(camera.projectionMatrix);cameraValid=true;frameIndex++;
     },
-    composite(r){const prev=r.autoClear;r.autoClear=false;compositeMaterial.uniforms.tClouds.value=pass.texture;compositeMaterial.uniforms.tCloudMeta.value=pass.motionTexture;compositeMaterial.uniforms.tCloudSignature.value=pass.signatureTexture;r.render(compositeScene,compositeCamera);r.autoClear=prev;},
+    composite(r: THREE.WebGLRenderer){const prev=r.autoClear;r.autoClear=false;compositeMaterial.uniforms.tClouds.value=pass.texture;compositeMaterial.uniforms.tCloudMeta.value=pass.motionTexture;compositeMaterial.uniforms.tCloudSignature.value=pass.signatureTexture;r.render(compositeScene,compositeCamera);r.autoClear=prev;},
     reset(){temporal?.reset();cameraValid=false;frameIndex=0;},
     dispose(){rawTarget?.dispose();temporal?.dispose();compositeMaterial.dispose();compositeQuad.geometry.dispose();},
   };
@@ -504,3 +517,8 @@ export function createClouds(scene, skyUniforms, renderer, taa = null) {
   const rig={mesh,uniforms,pass,shadows,noise:noiseResources,modes:{profile:profileMode(),weather:weatherMode(),noise:activeNoise,temporal:temporalMode,ambient:ambientMode(),cirrus:cirrusOn,shadows:shadows?.mode??"off",debug:DEBUG_MODES[debugMode()]},reset(){pass.reset();shadows?.reset();taa?.reset();},dispose(){pass.dispose();shadows?.dispose();noiseResources?.dispose();curlNoise.dispose();cirrusNoise?.dispose();mesh.geometry.dispose();mesh.material.dispose();}};
   return rig;
 }
+
+/** The cloud rig returned by {@link createClouds}. */
+export type CloudRig = ReturnType<typeof createClouds>;
+/** The offscreen cloud pass; null when the in-scene dome is used. */
+export type CloudPass = NonNullable<CloudRig["pass"]>;

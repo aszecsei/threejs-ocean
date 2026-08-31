@@ -28,7 +28,16 @@ export function bloomStrength() {
   return Number.isFinite(k) ? Math.max(0, k) : 1;
 }
 
-export function createPostPipeline(renderer, { bloom = 1, camera } = {}) {
+export interface PostPipelineOptions {
+  /** Bloom strength multiplier; 0 disables the pass. */
+  bloom?: number;
+  camera: THREE.PerspectiveCamera;
+}
+
+export function createPostPipeline(
+  renderer: THREE.WebGLRenderer,
+  { bloom = 1, camera }: PostPipelineOptions
+) {
   if (!camera) throw new Error("createPostPipeline requires the scene camera");
   const size = renderer.getDrawingBufferSize(new THREE.Vector2());
   const taa = createTemporalAA(renderer, camera);
@@ -82,8 +91,8 @@ export function createPostPipeline(renderer, { bloom = 1, camera } = {}) {
       const display = taa.enabled ? taa.resolve(frame) : frame;
       // Diagnostic views show raw motion/history data and deliberately skip
       // bloom, while OutputPass still gives them normal display encoding.
-      if (bloomPass && !taa.diagnostic) bloomPass.render(renderer, null, display);
-      outputPass.render(renderer, null, display);
+      if (bloomPass && !taa.diagnostic) bloomPass.render(renderer, null!, display, 0, false);
+      outputPass.render(renderer, null!, display, 0, false);
       renderer.setRenderTarget(null);
     },
     dispose() {
@@ -94,3 +103,6 @@ export function createPostPipeline(renderer, { bloom = 1, camera } = {}) {
     },
   };
 }
+
+/** The post pipeline returned by {@link createPostPipeline}. */
+export type PostPipeline = ReturnType<typeof createPostPipeline>;

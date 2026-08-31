@@ -1,14 +1,20 @@
 import * as THREE from "three";
 
+/** Cloud temporal-reprojection mode; "off" when the GPU cannot support it. */
+export type CloudTemporalMode = "off" | "interleaved" | "full";
+
 const QUAD_VERT = /* glsl */ `
   varying vec2 vUv;
   void main(){ vUv=uv; gl_Position=vec4(position.xy,0.0,1.0); }
 `;
 
-export function cloudTemporalMode(renderer) {
+export function cloudTemporalMode(renderer: THREE.WebGLRenderer | null | undefined): CloudTemporalMode {
   const q = new URLSearchParams(window.location.search).get("cloud-temporal");
   if (q === "0" || q === "false") return "off";
-  const gl = renderer.getContext();
+  if (!renderer) return "off";
+  // isWebGL2 is checked below; getContext() is typed as the WebGL1|WebGL2
+  // union, so narrow it to reach the WebGL2-only parameters.
+  const gl = renderer.getContext() as WebGL2RenderingContext;
   const supported = renderer.capabilities.isWebGL2
     && gl.getParameter(gl.MAX_DRAW_BUFFERS) >= 3
     && gl.getParameter(gl.MAX_COLOR_ATTACHMENTS) >= 3;
@@ -25,7 +31,12 @@ export function cloudBlurPasses() {
   return Number.isFinite(n) && n >= 0 ? Math.min(n, 4) : 2;
 }
 
-export function createCloudTemporal(renderer, mode, width, height) {
+export function createCloudTemporal(
+  renderer: THREE.WebGLRenderer,
+  mode: CloudTemporalMode,
+  width: number,
+  height: number
+) {
   if (mode === "off") return null;
   const makeTarget = () => {
     const target = new THREE.WebGLRenderTarget(width, height, {
@@ -165,7 +176,7 @@ export function createCloudTemporal(renderer, mode, width, height) {
     stencilBuffer: false,
   });
   let blurTargets = blurPasses > 0 ? [makeBlurTarget(), makeBlurTarget()] : null;
-  let blurredTexture = null;
+  let blurredTexture: THREE.Texture | null = null;
   const blurMaterial = blurPasses > 0 ? new THREE.ShaderMaterial({
     glslVersion: THREE.GLSL3,
     uniforms: { tSource: { value: null }, uInvResolution: { value: invResolution }, uOffset: { value: 1.5 } },
@@ -217,7 +228,7 @@ export function createCloudTemporal(renderer, mode, width, height) {
     get signatureTexture(){ return histories[readIndex].textures[2]; },
     get historyValid(){ return valid; },
     get resetCount(){ return resetCount; },
-    resolve(raw){
+    resolve(raw: THREE.WebGLRenderTarget){
       const writeIndex=1-readIndex;
       resolveMaterial.uniforms.tCurrentColor.value=raw.textures[0];
       resolveMaterial.uniforms.tCurrentMeta.value=raw.textures[1];
@@ -229,7 +240,8 @@ export function createCloudTemporal(renderer, mode, width, height) {
       renderer.setRenderTarget(histories[writeIndex]);
       renderer.render(scene,camera);
       readIndex=writeIndex; valid=true;
-      if(blurMaterial){
+      // blurTargets and blurMaterial are both created iff blurPasses > 0.
+      if(blurMaterial && blurTargets){
         let source=histories[readIndex].textures[0];
         for(let i=0;i<blurPasses;i++){
           const target=blurTargets[i%2];
@@ -244,7 +256,7 @@ export function createCloudTemporal(renderer, mode, width, height) {
       return histories[readIndex];
     },
     reset(){ resetCount++; valid=false; readIndex=0; clear(); },
-    resize(w,h){
+    resize(w: number, h: number){
       width=w;height=h;invResolution.set(1/w,1/h);
       for(const target of histories) target.dispose();
       histories=[makeTarget(),makeTarget()];
@@ -256,3 +268,6 @@ export function createCloudTemporal(renderer, mode, width, height) {
   clear();
   return api;
 }
+
+/** The cloud temporal resolver returned by {@link createCloudTemporal}. */
+export type CloudTemporal = ReturnType<typeof createCloudTemporal>;

@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import type { TaaMaterialConfig, Uniform } from "./core/types.js";
 
 // Full-image temporal AA. The current frame uses two MRT attachments:
 //   0: linear HDR color
@@ -42,14 +43,34 @@ export const TAA_FRAGMENT_GLSL = /* glsl */ `
   #endif
 `;
 
-export function taaQueryMode() {
+/** TAA off, on, or one of the diagnostic visualisations. */
+export type TaaMode = "off" | "on" | "velocity" | "history" | "reactive";
+
+/**
+ * The part of the TAA rig that materials need. Kept structural (rather than
+ * the full api type) so sky/clouds/ocean/godrays do not depend on the whole
+ * resolver just to configure a material.
+ */
+export interface TaaHandle {
+  enabled: boolean;
+  uniforms: Record<string, Uniform<unknown>>;
+}
+
+interface TaaTracker {
+  object: THREE.Object3D;
+  previousMatrix: THREE.Matrix4;
+  initialized: boolean;
+  reactive: number;
+}
+
+export function taaQueryMode(): TaaMode {
   const q = new URLSearchParams(window.location.search).get("taa");
   if (q === "0" || q === "false") return "off";
   if (q === "velocity" || q === "history" || q === "reactive") return q;
   return "on";
 }
 
-export function taaMaterialConfig(taa) {
+export function taaMaterialConfig(taa: TaaHandle | null | undefined): TaaMaterialConfig {
   if (!taa || !taa.enabled) return { glslVersion: null, defines: {}, uniforms: {} };
   return {
     glslVersion: THREE.GLSL3,
@@ -58,13 +79,17 @@ export function taaMaterialConfig(taa) {
   };
 }
 
-function appendBeforeFinalBrace(source, code) {
+function appendBeforeFinalBrace(source: string, code: string): string {
   const i = source.lastIndexOf("}");
   if (i < 0) throw new Error("TAA shader injection could not find main() terminator");
   return `${source.slice(0, i)}\n${code}\n${source.slice(i)}`;
 }
 
-export function createTemporalAA(renderer, camera, { mode = taaQueryMode() } = {}) {
+export function createTemporalAA(
+  renderer: THREE.WebGLRenderer,
+  camera: THREE.PerspectiveCamera,
+  { mode = taaQueryMode() }: { mode?: TaaMode } = {}
+) {
   const enabled = mode !== "off";
   const size = renderer.getDrawingBufferSize(new THREE.Vector2());
   const currentViewProjection = new THREE.Matrix4();
@@ -75,7 +100,7 @@ export function createTemporalAA(renderer, camera, { mode = taaQueryMode() } = {
   const committedPosition = new THREE.Vector3();
   const committedQuaternion = new THREE.Quaternion();
   const committedProjection = new THREE.Matrix4();
-  const trackers = [];
+  const trackers: TaaTracker[] = [];
 
   const uniforms = {
     uCurrentViewProjection: { value: currentViewProjection },
@@ -86,8 +111,8 @@ export function createTemporalAA(renderer, camera, { mode = taaQueryMode() } = {
     uTaaDeltaTime: { value: 1 / 60 },
   };
 
-  let histories = [];
-  let displayTarget = null;
+  let histories: THREE.WebGLRenderTarget[] = [];
+  let displayTarget: THREE.WebGLRenderTarget | null = null;
   let readIndex = 0;
   let historyValid = false;
   let forcePreviousCurrent = true;
@@ -287,7 +312,12 @@ export function createTemporalAA(renderer, camera, { mode = taaQueryMode() } = {
 
     // Built-in materials keep their normal lighting shader. This hook only
     // adds previous clip coordinates and a second MRT output.
-    trackObject(object, { reactive = 0 } = {}) {
+    trackObject(
+      // Any object with material(s), not just Mesh: the ?ocean=0 fallback
+      // tracks a GridHelper, which is LineSegments.
+      object: THREE.Object3D & { material: THREE.Material | THREE.Material[] },
+      { reactive = 0 }: { reactive?: number } = {}
+    ) {
       if (!enabled) return null;
       const tracker = {
         object,
@@ -299,11 +329,14 @@ export function createTemporalAA(renderer, camera, { mode = taaQueryMode() } = {
       const materials = Array.isArray(object.material) ? object.material : [object.material];
       for (const material of materials) {
         if (!material) continue;
-        material.glslVersion = THREE.GLSL3;
+        // WebGLProgram reads glslVersion off any material, but three only
+        // declares it on ShaderMaterial. Forcing GLSL3 on a built-in material
+        // is exactly what makes the second MRT output below legal.
+        (material as THREE.Material & { glslVersion: THREE.GLSLVersion }).glslVersion = THREE.GLSL3;
         // Preserve feature hooks installed before TAA, such as world-space
         // cloud-shadow injection on standard materials.
         const priorCompile = material.onBeforeCompile?.bind(material);
-        material.onBeforeCompile = (shader, renderer) => {
+        material.onBeforeCompile = (shader: THREE.WebGLProgramParametersWithUniforms, renderer: THREE.WebGLRenderer) => {
           if (priorCompile) priorCompile(shader, renderer);
           shader.uniforms.uPreviousViewProjection = uniforms.uPreviousViewProjection;
           shader.uniforms.uPreviousModelMatrix = { value: tracker.previousMatrix };
@@ -331,7 +364,7 @@ export function createTemporalAA(renderer, camera, { mode = taaQueryMode() } = {
       return tracker;
     },
 
-    beginFrame(dt, scene) {
+    beginFrame(dt: number, scene: THREE.Scene) {
       if (!enabled) return;
       if (frameBegun) throw new Error("TAA beginFrame called twice without endFrame");
       frameBegun = true;
@@ -390,8 +423,10 @@ export function createTemporalAA(renderer, camera, { mode = taaQueryMode() } = {
       frameBegun = false;
     },
 
-    resolve(currentTarget) {
-      if (!enabled) return currentTarget;
+    resolve(currentTarget: THREE.WebGLRenderTarget): THREE.WebGLRenderTarget {
+      // These three are created together iff `enabled`; the guard restates
+      // that invariant for the type checker.
+      if (!enabled || !resolveMaterial || !displayMaterial || !displayTarget) return currentTarget;
       const writeIndex = 1 - readIndex;
       const historyRead = histories[readIndex];
       const historyWrite = histories[writeIndex];
@@ -430,7 +465,7 @@ export function createTemporalAA(renderer, camera, { mode = taaQueryMode() } = {
     resize() {
       renderer.getDrawingBufferSize(size);
       uniforms.uTaaInvResolution.value.set(1 / size.x, 1 / size.y);
-      if (!enabled) return;
+      if (!enabled || !displayTarget || !displayMaterial) return;
       for (const target of histories) target.setSize(size.x, size.y);
       displayTarget.setSize(size.x, size.y);
       displayMaterial.uniforms.uResolution.value.copy(size);
@@ -449,3 +484,6 @@ export function createTemporalAA(renderer, camera, { mode = taaQueryMode() } = {
   if (enabled) clearHistories();
   return api;
 }
+
+/** The full temporal-AA rig returned by {@link createTemporalAA}. */
+export type TaaApi = ReturnType<typeof createTemporalAA>;

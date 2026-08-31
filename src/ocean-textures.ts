@@ -11,41 +11,29 @@ import * as THREE from "three";
 // Everything is tileable by wrapping the noise lattice at its period, so
 // the texture can be sampled at any world scale with RepeatWrapping.
 
-const SEED = 4242;
-
-function makeRng(seed) {
-  let s = seed >>> 0;
-  return function () {
-    s = (s + 0x6d2b79f5) | 0;
-    let t = Math.imul(s ^ (s >>> 15), 1 | s);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 // Lattice hash: deterministic per (ix, iy, salt); lattice coords are wrapped
 // by the caller so the same cell hashes identically across the tile border.
-function hash2(ix, iy, salt) {
+function hash2(ix: number, iy: number, salt: number): number {
   let h = (ix * 374761393 + iy * 668265263 + salt * 2246822519) | 0;
   h = Math.imul(h ^ (h >>> 13), 1274126177);
   h ^= h >>> 16;
   return (h >>> 0) / 4294967296;
 }
 
-const fade = (t) => t * t * t * (t * (t * 6 - 15) + 10);
+const fade = (t: number) => t * t * t * (t * (t * 6 - 15) + 10);
 
 // Tileable gradient (Perlin-style) noise with integer period p.
-function gradNoise(x, y, p, salt) {
+function gradNoise(x: number, y: number, p: number, salt: number): number {
   const x0 = Math.floor(x);
   const y0 = Math.floor(y);
   const fx = x - x0;
   const fy = y - y0;
-  const wrap = (i) => ((i % p) + p) % p;
-  const g = (ix, iy) => {
+  const wrap = (i: number) => ((i % p) + p) % p;
+  const g = (ix: number, iy: number): [number, number] => {
     const a = hash2(wrap(ix), wrap(iy), salt) * Math.PI * 2;
     return [Math.cos(a), Math.sin(a)];
   };
-  const dot = (ix, iy, dx, dy) => {
+  const dot = (ix: number, iy: number, dx: number, dy: number) => {
     const v = g(ix, iy);
     return v[0] * dx + v[1] * dy;
   };
@@ -69,7 +57,7 @@ function gradNoise(x, y, p, salt) {
 //    0  plain fBm: soft and rolling.
 //   -1  billow  (2|n| - 1): rounded lumps with soft partings — cloud.
 // The blend is continuous, so intermediate values are meaningful.
-function fbm(u, v, basePeriod, octaves, salt, fold = 0, gain = 0.5) {
+function fbm(u: number, v: number, basePeriod: number, octaves: number, salt: number, fold = 0, gain = 0.5): number {
   let sum = 0;
   let amp = 1;
   let norm = 0;
@@ -87,7 +75,7 @@ function fbm(u, v, basePeriod, octaves, salt, fold = 0, gain = 0.5) {
 }
 
 // Tileable Worley: returns [F1, F2] for uv in [0,1) with `cells` per side.
-function worley(u, v, cells, salt) {
+function worley(u: number, v: number, cells: number, salt: number): [number, number] {
   const x = u * cells;
   const y = v * cells;
   const ix = Math.floor(x);
@@ -109,9 +97,21 @@ function worley(u, v, cells, salt) {
   return [Math.sqrt(f1), Math.sqrt(f2)];
 }
 
-const clamp01 = (x) => Math.min(1, Math.max(0, x));
+const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
 
-export function createOceanDetailTexture(renderer, size = 512, opts = {}) {
+export interface OceanDetailOptions {
+  /** Ridge/fold strength applied per fbm octave. */
+  fold?: number;
+  /** Per-octave amplitude falloff. */
+  gain?: number;
+  octaves?: number;
+}
+
+export function createOceanDetailTexture(
+  renderer: THREE.WebGLRenderer,
+  size = 512,
+  opts: OceanDetailOptions = {}
+): THREE.DataTexture {
   const { fold = 0, gain = 0.5, octaves = 5 } = opts;
   const N = size;
   const height = new Float32Array(N * N);

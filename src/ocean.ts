@@ -2,7 +2,9 @@ import * as THREE from "three";
 import { createOceanFft, cascadeAmpScale, OCEAN_FFT_DEFAULTS } from "./ocean-fft.js";
 import { SKY_COLOR_GLSL } from "./sky.js";
 import { createOceanDetailTexture } from "./ocean-textures.js";
-import { TAA_FRAGMENT_GLSL, taaMaterialConfig } from "./taa.js";
+import { TAA_FRAGMENT_GLSL, taaMaterialConfig, type TaaApi } from "./taa.js";
+import type { CloudPass } from "./clouds.js";
+import type { Uniform } from "./core/types.js";
 
 // --- Stylized FFT ocean -----------------------------------------------------
 // Distance-graded radial disc (dense verts near the camera, sparse to the
@@ -151,7 +153,7 @@ export function ssrMode() {
 
 export function oceanSize() {
   const q = new URLSearchParams(window.location.search).get("ocean-n");
-  const n = parseInt(q, 10);
+  const n = parseInt(q ?? "", 10);
   if ([128, 256, 512].includes(n)) return n;
   return 256;
 }
@@ -162,7 +164,7 @@ export function oceanSize() {
 // (where detail matters) and falls off toward the fog-obscured horizon. The
 // mesh is never rotated and snaps to the camera XZ every frame, while the
 // wave sampling stays world-anchored.
-function buildDiscGeometry(rings, sectors, rMin, rMax) {
+function buildDiscGeometry(rings: number, sectors: number, rMin: number, rMax: number): THREE.BufferGeometry {
   const positions = new Float32Array((rings + 1) * sectors * 3);
   const idx = [];
 
@@ -203,7 +205,7 @@ const SWELL_COMPONENTS = [
   { dx: -0.45, dz: 0.89, wl: 7.5, amp: 0.07, phase: 4.1 },
 ];
 
-export function sampleSwell(x, z, t) {
+export function sampleSwell(x: number, z: number, t: number): { h: number; gx: number; gz: number } {
   let h = 0;
   let gx = 0;
   let gz = 0;
@@ -749,7 +751,27 @@ const FRAGMENT_SHADER = /* glsl */ `
 
 // --- Factory ----------------------------------------------------------------
 // Returns { mesh, uniforms, update(dt, t), sampleSwell, fft }.
-export function createOcean(scene, skyUniforms, renderer, opts = {}) {
+/** Caller overrides for {@link createOcean}. */
+export interface OceanOptions extends Partial<typeof OCEAN_DEFAULTS> {
+  size?: number;
+  taa?: TaaApi | null;
+  /** Procedural detail texture; defaults to the ?detail flag. */
+  detail?: boolean;
+  /** Second (fine) FFT cascade; defaults to the ?cascade2 flag. */
+  cascade2?: boolean;
+  /** Contact foam; defaults to the ?contact flag. */
+  contact?: boolean;
+  heightRms?: number;
+  /** Cloud shadow uniforms, shared by identity with the cloud rig. */
+  cloudShadow?: Record<string, Uniform<unknown>> | null;
+}
+
+export function createOcean(
+  scene: THREE.Scene,
+  skyUniforms: Record<string, Uniform<unknown>>,
+  renderer: THREE.WebGLRenderer,
+  opts: OceanOptions = {}
+) {
   const o = { ...OCEAN_DEFAULTS, ...opts };
   const taa = opts.taa ?? null;
   const taaConfig = taaMaterialConfig(taa);
@@ -787,9 +809,9 @@ export function createOcean(scene, skyUniforms, renderer, opts = {}) {
 
   const uniforms = {
     // FFT pipeline outputs (rebound every frame; the pipeline ping-pongs).
-    uDisplace: { value: null },
-    uPreviousDisplace: { value: null },
-    uFoam: { value: null },
+    uDisplace: { value: null as THREE.Texture | null },
+    uPreviousDisplace: { value: null as THREE.Texture | null },
+    uFoam: { value: null as THREE.Texture | null },
 
     // Shared with the sky: same uniform *objects*, not copies.
     uSunDirection: skyUniforms.uSunDirection,
@@ -802,9 +824,9 @@ export function createOcean(scene, skyUniforms, renderer, opts = {}) {
     uFoamSize: { value: fft.params.size },
     ...(fft2
       ? {
-          uDisplace2: { value: null },
-          uPreviousDisplace2: { value: null },
-          uFoam2: { value: null },
+          uDisplace2: { value: null as THREE.Texture | null },
+          uPreviousDisplace2: { value: null as THREE.Texture | null },
+          uFoam2: { value: null as THREE.Texture | null },
           uPatchSize2: { value: fft2.params.patchSize },
           uFoamSize2: { value: fft2.params.size },
           uCascade2Fade: { value: new THREE.Vector2(...o.CASCADE2_FADE) },
@@ -840,8 +862,8 @@ export function createOcean(scene, skyUniforms, renderer, opts = {}) {
     uFoamBump: { value: o.FOAM_BUMP },
 
     // Bound by createSceneCapture every frame.
-    uSceneColor: { value: null },
-    uSceneDepth: { value: null },
+    uSceneColor: { value: null as THREE.Texture | null },
+    uSceneDepth: { value: null as THREE.Texture | null },
     uProjection: { value: new THREE.Matrix4() },
     uCameraNear: { value: 0.1 },
     uCameraFar: { value: 500 },
@@ -904,22 +926,25 @@ export function createOcean(scene, skyUniforms, renderer, opts = {}) {
     params: { ...OCEAN_DEFAULTS, ...fft.params },
     fft,
     fft2,
-    update(dt, t) {
+    update(dt: number, t: number) {
       fft.update(dt, t);
       uniforms.uDisplace.value = fft.displacementTexture();
       uniforms.uPreviousDisplace.value = fft.previousDisplacementTexture();
       uniforms.uFoam.value = fft.foamTexture();
       if (fft2) {
         fft2.update(dt, t);
-        uniforms.uDisplace2.value = fft2.displacementTexture();
-        uniforms.uPreviousDisplace2.value = fft2.previousDisplacementTexture();
-        uniforms.uFoam2.value = fft2.foamTexture();
+        uniforms.uDisplace2!.value = fft2.displacementTexture();
+        uniforms.uPreviousDisplace2!.value = fft2.previousDisplacementTexture();
+        uniforms.uFoam2!.value = fft2.foamTexture();
       }
       uniforms.uTime.value = t;
     },
     sampleSwell,
   };
 }
+
+/** The ocean rig returned by {@link createOcean}. */
+export type OceanRig = ReturnType<typeof createOcean>;
 
 // --- Scene capture for screen-space reflections ------------------------------
 // Frame = two passes:
@@ -934,9 +959,15 @@ export function createOcean(scene, skyUniforms, renderer, opts = {}) {
 // `cloudPass` (clouds.js, offscreen mode) is composited into the capture
 // target right after pass 1, so the blit, the SSR color fallback and the
 // frame all see clouds exactly where the in-scene dome used to draw them.
-export function createSceneCapture(renderer, camera, ocean, cloudPass = null, taa = null) {
+export function createSceneCapture(
+  renderer: THREE.WebGLRenderer,
+  camera: THREE.PerspectiveCamera,
+  ocean: OceanRig,
+  cloudPass: CloudPass | null = null,
+  taa: TaaApi | null = null
+) {
   const size = renderer.getDrawingBufferSize(new THREE.Vector2());
-  const makeTarget = (w, h) => {
+  const makeTarget = (w: number, h: number) => {
     const depthTexture = new THREE.DepthTexture(w, h, THREE.FloatType);
     return new THREE.WebGLRenderTarget(w, h, {
       ...(taa?.enabled ? { count: 2 } : {}),
@@ -957,9 +988,9 @@ export function createSceneCapture(renderer, camera, ocean, cloudPass = null, ta
   const blitCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   const blitMaterial = new THREE.ShaderMaterial({
     uniforms: {
-      tColor: { value: null },
-      tDepth: { value: null },
-      ...(taa?.enabled ? { tMotion: { value: null } } : {}),
+      tColor: { value: null as THREE.Texture | null },
+      tDepth: { value: null as THREE.Texture | null },
+      ...(taa?.enabled ? { tMotion: { value: null as THREE.Texture | null } } : {}),
     },
     glslVersion: taa?.enabled ? THREE.GLSL3 : null,
     depthTest: true,
@@ -1006,7 +1037,7 @@ export function createSceneCapture(renderer, camera, ocean, cloudPass = null, ta
     },
     // `frame` is the linear HDR target the finished frame accumulates into
     // (post.js); the blit + ocean pass draws there instead of the screen.
-    render(scene, frame) {
+    render(scene: THREE.Scene, frame: THREE.WebGLRenderTarget) {
       // Pass 1: scene minus ocean into the capture target.
       ocean.mesh.visible = false;
       renderer.setRenderTarget(target);
@@ -1048,3 +1079,6 @@ export function createSceneCapture(renderer, camera, ocean, cloudPass = null, ta
     },
   };
 }
+
+/** The scene-capture pass returned by {@link createSceneCapture}. */
+export type SceneCapture = ReturnType<typeof createSceneCapture>;

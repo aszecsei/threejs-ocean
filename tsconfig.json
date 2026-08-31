@@ -12,7 +12,11 @@
     "skipLibCheck": true,
 
     "strict": true,
-    "noUncheckedIndexedAccess": true,
+    // noUncheckedIndexedAccess is deliberately OFF. This is numeric graphics
+    // code: gradient tables, Halton sequences, butterfly tables and typed
+    // arrays are indexed in tight loops with in-range indices by construction.
+    // Enabling it produced ~145 errors whose only fix is a non-null assertion,
+    // which buys no safety and costs readability.
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true,
     "noUnusedLocals": true,

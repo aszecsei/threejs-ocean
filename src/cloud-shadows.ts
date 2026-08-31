@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { CLOUD_DENSITY_GLSL } from "./cloud-density.glsl.js";
-import { TAA_FRAGMENT_GLSL, taaMaterialConfig } from "./taa.js";
+import { TAA_FRAGMENT_GLSL, taaMaterialConfig, type TaaHandle } from "./taa.js";
+import type { Defines, Uniform } from "./core/types.js";
 
 const RESOLUTION = 256;
 // Ocean radius is 380 world units. Cover its full 760-unit diameter plus a
@@ -8,14 +9,22 @@ const RESOLUTION = 256;
 const EXTENT = 840;
 const QUAD_VERT = /* glsl */ `varying vec2 vUv;void main(){vUv=uv;gl_Position=vec4(position.xy,0.0,1.0);}`;
 
-export function cloudShadowMode() {
+/** Cloud-shadow map state; "debug" renders the map itself over the frame. */
+export type CloudShadowMode = "off" | "on" | "debug";
+
+export function cloudShadowMode(): CloudShadowMode {
   const params = new URLSearchParams(window.location.search);
   const q = params.get("cloud-shadows");
   if (q === "0" || q === "false") return "off";
   return q === "debug" || params.get("cloud-debug") === "shadow" ? "debug" : "on";
 }
 
-export function createCloudShadows(renderer, densityUniforms, densityDefines, taa = null) {
+export function createCloudShadows(
+  renderer: THREE.WebGLRenderer,
+  densityUniforms: Record<string, Uniform<unknown>>,
+  densityDefines: Defines,
+  taa: TaaHandle | null = null
+) {
   const mode = cloudShadowMode();
   if (mode === "off" || !renderer.capabilities.isWebGL2) return null;
   const makeTarget = () => new THREE.WebGLRenderTarget(RESOLUTION, RESOLUTION, {
@@ -116,7 +125,7 @@ export function createCloudShadows(renderer, densityUniforms, densityDefines, ta
     get target(){ return targets[readIndex]; },
     get historyValid(){ return historyValid; },
     get resetCount(){ return resetCount; },
-    update(cameraPosition){
+    update(cameraPosition: THREE.Vector3){
       const snappedX=Math.floor(cameraPosition.x/worldTexel)*worldTexel;
       const snappedY=Math.floor(cameraPosition.z/worldTexel)*worldTexel;
       previousCenter.copy(center);
@@ -129,7 +138,7 @@ export function createCloudShadows(renderer, densityUniforms, densityDefines, ta
       readIndex=writeIndex;historyValid=true;
       api.uniforms.tCloudShadow.value=targets[readIndex].texture;
     },
-    renderDebug(frame){
+    renderDebug(frame: THREE.WebGLRenderTarget){
       if(mode!=="debug")return;
       debugMaterial.uniforms.tShadow.value=targets[readIndex].texture;
       quad.material=debugMaterial;
@@ -143,10 +152,22 @@ export function createCloudShadows(renderer, densityUniforms, densityDefines, ta
   return api;
 }
 
-export function attachCloudShadow(material, shadowUniforms) {
+/**
+ * Makes a standard-lit material receive the cloud shadow map.
+ *
+ * This rewrites three.js's own shader source by literal string match,
+ * including the body of the `lights_fragment_begin` chunk. Every replace here
+ * is a silent no-op if the needle moves in a three.js upgrade: the shader
+ * still compiles and the shadow simply disappears. scripts/probe-shader-patches.js
+ * asserts that each one still finds its target.
+ */
+export function attachCloudShadow(
+  material: THREE.Material | null | undefined,
+  shadowUniforms: Record<string, Uniform<unknown>> | null | undefined
+): void {
   if (!material || !shadowUniforms) return;
   const prior = material.onBeforeCompile?.bind(material);
-  material.onBeforeCompile = (shader, renderer) => {
+  material.onBeforeCompile = (shader: THREE.WebGLProgramParametersWithUniforms, renderer: THREE.WebGLRenderer) => {
     if (prior) prior(shader, renderer);
     Object.assign(shader.uniforms, shadowUniforms);
     shader.vertexShader = shader.vertexShader.replace(
@@ -173,3 +194,6 @@ export function attachCloudShadow(material, shadowUniforms) {
   material.customProgramCacheKey=()=>`${priorKey?priorKey():""}|cloud-shadow-v2-sun-only`;
   material.needsUpdate=true;
 }
+
+/** The cloud shadow-map rig returned by {@link createCloudShadows}. */
+export type CloudShadows = NonNullable<ReturnType<typeof createCloudShadows>>;

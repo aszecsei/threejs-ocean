@@ -1,5 +1,6 @@
 import * as THREE from "three";
-import { TAA_FRAGMENT_GLSL, taaMaterialConfig } from "./taa.js";
+import { TAA_FRAGMENT_GLSL, taaMaterialConfig, type TaaHandle } from "./taa.js";
+import type { Uniform } from "./core/types.js";
 
 // --- Screen-space crepuscular rays ----------------------------------------
 // Three passes after the main frame:
@@ -49,7 +50,34 @@ const QUAD_VERT = /* glsl */ `
   }
 `;
 
-export function createGodRays(renderer, camera, scene, sky, clouds, { strength = 1, taa = null } = {}) {
+/** What god rays need from the sky rig. */
+export interface GodRaySky {
+  mesh: THREE.Object3D;
+  uniforms: {
+    uSunColor: Uniform<THREE.Color>;
+    uSunDirection: Uniform<THREE.Vector3>;
+    uMaskMode: Uniform<number>;
+  };
+}
+
+/**
+ * What god rays need from the cloud rig. `pass` is the offscreen cloud buffer;
+ * when it is null the in-scene dome is masked by layer instead.
+ */
+export interface GodRayClouds {
+  mesh: THREE.Object3D;
+  uniforms: { uMaskMode: Uniform<number> };
+  pass: { texture: THREE.Texture } | null;
+}
+
+export function createGodRays(
+  renderer: THREE.WebGLRenderer,
+  camera: THREE.PerspectiveCamera,
+  scene: THREE.Scene,
+  sky: GodRaySky,
+  clouds: GodRayClouds | null,
+  { strength = 1, taa = null }: { strength?: number; taa?: TaaHandle | null } = {}
+) {
   const taaConfig = taaMaterialConfig(taa);
   // The mask needs the sky dome; everything else stays off MASK_LAYER.
   // Clouds: with the offscreen cloud pass (clouds.pass) the occlusion comes
@@ -199,7 +227,7 @@ export function createGodRays(renderer, camera, scene, sky, clouds, { strength =
 
     // Call after the frame has been drawn into `frame` (the linear HDR
     // target from post.js). Composites additively into that same target.
-    render(frame) {
+    render(frame: THREE.WebGLRenderTarget) {
       // Sun in NDC. Skip entirely when it is behind the camera or far off
       // screen -- nothing would radiate from there.
       sunView.copy(sky.uniforms.uSunDirection.value).add(camera.position).project(camera);
@@ -229,7 +257,8 @@ export function createGodRays(renderer, camera, scene, sky, clouds, { strength =
       camera.layers.mask = prevLayers;
 
       // Cloud occlusion from the offscreen buffer (no second dome march).
-      if (cloudPass) {
+      // cloudMaskMaterial is created iff cloudPass exists.
+      if (cloudPass && cloudMaskMaterial) {
         renderer.autoClear = false;
         cloudMaskMaterial.uniforms.tClouds.value = cloudPass.texture;
         quad.material = cloudMaskMaterial;
@@ -260,3 +289,6 @@ export function createGodRays(renderer, camera, scene, sky, clouds, { strength =
     },
   };
 }
+
+/** The god-ray rig returned by {@link createGodRays}. */
+export type GodRays = ReturnType<typeof createGodRays>;

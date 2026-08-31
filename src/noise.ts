@@ -2,28 +2,28 @@
 // Everything here is pure math: callers supply seeds and periods and receive
 // scalars in [0, 1] (or signed derivatives for the curl helpers).
 
-export function hash3(x, y, z, seed) {
+export function hash3(x: number, y: number, z: number, seed: number): number {
   let h = (x * 374761393 + y * 668265263 + z * 2147483647 + seed) | 0;
   h = Math.imul(h ^ (h >>> 13), 1274126177);
   return (h ^ (h >>> 16)) >>> 0;
 }
 
-export function fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
-export function lerp(a, b, t) { return a + (b - a) * t; }
-export function wrap(i, period) { return ((i % period) + period) % period; }
+export function fade(t: number): number { return t * t * t * (t * (t * 6 - 15) + 10); }
+export function lerp(a: number, b: number, t: number): number { return a + (b - a) * t; }
+export function wrap(i: number, period: number): number { return ((i % period) + period) % period; }
 
-export const GRADIENTS = [
+export const GRADIENTS: ReadonlyArray<readonly [number, number, number]> = [
   [1, 1, 0], [-1, 1, 0], [1, -1, 0], [-1, -1, 0],
   [1, 0, 1], [-1, 0, 1], [1, 0, -1], [-1, 0, -1],
   [0, 1, 1], [0, -1, 1], [0, 1, -1], [0, -1, -1],
 ];
 
-export function gradientDot(ix, iy, iz, x, y, z, period, seed) {
+export function gradientDot(ix: number, iy: number, iz: number, x: number, y: number, z: number, period: number, seed: number): number {
   const g = GRADIENTS[hash3(wrap(ix, period), wrap(iy, period), wrap(iz, period), seed) % GRADIENTS.length];
   return g[0] * (x - ix) + g[1] * (y - iy) + g[2] * (z - iz);
 }
 
-export function perlin(x, y, z, period, seed) {
+export function perlin(x: number, y: number, z: number, period: number, seed: number): number {
   const x0 = Math.floor(x), y0 = Math.floor(y), z0 = Math.floor(z);
   const u = fade(x - x0), v = fade(y - y0), w = fade(z - z0);
   const n000 = gradientDot(x0, y0, z0, x, y, z, period, seed);
@@ -38,7 +38,7 @@ export function perlin(x, y, z, period, seed) {
               lerp(lerp(n001, n101, u), lerp(n011, n111, u), v), w);
 }
 
-export function perlinFbm(x, y, z, period, seed) {
+export function perlinFbm(x: number, y: number, z: number, period: number, seed: number): number {
   let sum = 0, norm = 0, amp = 1, frequency = 1;
   for (let octave = 0; octave < 3; octave++) {
     sum += amp * perlin(x * frequency, y * frequency, z * frequency, period * frequency, seed + octave * 977);
@@ -49,7 +49,7 @@ export function perlinFbm(x, y, z, period, seed) {
   return Math.max(0, Math.min(1, 0.5 + 0.5 * sum / norm));
 }
 
-export function feature(cellX, cellY, cellZ, period, seed) {
+export function feature(cellX: number, cellY: number, cellZ: number, period: number, seed: number): [number, number, number] {
   const x = wrap(cellX, period), y = wrap(cellY, period), z = wrap(cellZ, period);
   return [
     (hash3(x, y, z, seed) & 1023) / 1024,
@@ -58,7 +58,7 @@ export function feature(cellX, cellY, cellZ, period, seed) {
   ];
 }
 
-export function invertedWorley(x, y, z, period, seed) {
+export function invertedWorley(x: number, y: number, z: number, period: number, seed: number): number {
   const cx = Math.floor(x), cy = Math.floor(y), cz = Math.floor(z);
   let nearest = 3;
   for (let dz = -1; dz <= 1; dz++) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
@@ -75,12 +75,12 @@ export function invertedWorley(x, y, z, period, seed) {
 // Returns a Float32Array of size*size*3 signed values (not yet normalized):
 // [curlX(psi1), curlY(psi1), curlY(psi2)] per texel, where
 // curl(psi) = (d(psi)/dy, -d(psi)/dx).
-export function curlField(size, period, seed) {
+export function curlField(size: number, period: number, seed: number): Float32Array {
   const out = new Float32Array(size * size * 3);
   const eps = (0.5 * period) / size;
   const slice1 = 0.37, slice2 = 0.71;
-  const psi1 = (x, y) => perlinFbm(x, y, slice1 * period, period, seed);
-  const psi2 = (x, y) => perlinFbm(x, y, slice2 * period, period, seed + 5407);
+  const psi1 = (x: number, y: number) => perlinFbm(x, y, slice1 * period, period, seed);
+  const psi2 = (x: number, y: number) => perlinFbm(x, y, slice2 * period, period, seed + 5407);
   let i = 0;
   for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
     const u = (x / size) * period, v = (y / size) * period;
@@ -96,7 +96,7 @@ export function curlField(size, period, seed) {
 // homogeneous point set — the classic dither/jitter texture. On a torus the
 // "largest void" insertion rule stays valid past half fill, so a single
 // insertion loop covers phases II and III.
-export function blueNoiseRanks(size, seed) {
+export function blueNoiseRanks(size: number, seed: number): Float32Array {
   const N = size * size;
   const sigma = 1.5;
   const kernel = new Float32Array(N);
@@ -106,7 +106,7 @@ export function blueNoiseRanks(size, seed) {
   }
   const energy = new Float32Array(N);
   const ones = new Uint8Array(N);
-  const splat = (pos, sign) => {
+  const splat = (pos: number, sign: number) => {
     const px = pos % size, py = (pos - px) / size;
     for (let y = 0; y < size; y++) {
       const ky = ((y - py) % size + size) % size;
@@ -115,7 +115,7 @@ export function blueNoiseRanks(size, seed) {
       }
     }
   };
-  const pick = (wantOne, wantMax) => {
+  const pick = (wantOne: boolean, wantMax: boolean) => {
     let best = -1, bestE = wantMax ? -Infinity : Infinity;
     for (let i = 0; i < N; i++) {
       if (ones[i] !== (wantOne ? 1 : 0)) continue;

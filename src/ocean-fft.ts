@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { GPUComputationRenderer } from "three/addons/misc/GPUComputationRenderer.js";
+import { GPUComputationRenderer, type Variable } from "three/addons/misc/GPUComputationRenderer.js";
 
 // --- Ocean FFT pipeline -----------------------------------------------------
 // GPU Tessendorf simulation:
@@ -29,6 +29,25 @@ import { GPUComputationRenderer } from "three/addons/misc/GPUComputationRenderer
 //     order — no separate reversal pass.
 //   - GPUComputationRenderer injects `uniform sampler2D <depVarName>` for
 //     each dependency and a `resolution` define; don't redeclare those here.
+
+/**
+ * One directional wave spectrum after {@link resolveSpectra}: the authored
+ * knobs plus the two JONSWAP quantities derived from them.
+ */
+interface SpectrumParams {
+  scale: number;
+  fetch: number;
+  windSpeed: number;
+  angle: number;
+  gamma: number;
+  spreadBlend: number;
+  swell: number;
+  fade: number;
+  /** JONSWAP alpha; filled in by resolveSpectra. */
+  alpha: number;
+  /** Peak angular frequency; filled in by resolveSpectra. */
+  peakOmega: number;
+}
 
 export const OCEAN_FFT_DEFAULTS = {
   size: 256,             // FFT resolution N (power of two)
@@ -78,7 +97,7 @@ export const OCEAN_FFT_DEFAULTS = {
   cutoffHigh: Infinity,
   // Shared amplitude scale across cascades (see cascadeAmpScale). Null means
   // "normalize this cascade alone to heightRms".
-  ampScale: null,
+  ampScale: null as number | null,
   choppy: 4.5,           // horizontal (Gerstner) displacement scale (crest sharpness)
   foamThreshold: 0.2,  // Jacobian below this starts injecting foam
   foamSpan: 0.5,         // J falloff width below the threshold
@@ -93,7 +112,7 @@ const SEED = 1337;
 const ANISOTROPY = 6;
 
 // Deterministic RNG (mulberry32) so the sea looks the same across reloads.
-function makeRng(seed) {
+function makeRng(seed: number): () => number {
   let s = seed >>> 0;
   return function () {
     s = (s + 0x6d2b79f5) | 0;
@@ -105,9 +124,18 @@ function makeRng(seed) {
 
 const G = 9.81;
 
+/** The fully-resolved option set: every key of OCEAN_FFT_DEFAULTS present. */
+export type ResolvedFftOptions = typeof OCEAN_FFT_DEFAULTS;
+
+/** Caller-supplied overrides. swellSpectrum merges field-wise, not wholesale. */
+export type OceanFftOptions =
+  Partial<Omit<ResolvedFftOptions, "swellSpectrum">> & {
+    swellSpectrum?: Partial<ResolvedFftOptions["swellSpectrum"]>;
+  };
+
 // Options merge that reaches into swellSpectrum, so a caller can override one
 // swell field without silently dropping the rest of the block.
-function mergeOpts(c) {
+function mergeOpts(c: OceanFftOptions): ResolvedFftOptions {
   return {
     ...OCEAN_FFT_DEFAULTS,
     ...c,
@@ -126,26 +154,26 @@ function mergeOpts(c) {
 // match SPECTRUM_SHADER's copy exactly — same clamp, same form — or the
 // amplitudes and the time evolution describe different waves. (Same JS-mirror
 // discipline sky.js follows for SKY_CONSTS.)
-const dispersion = (k, depth) => Math.sqrt(G * k * Math.tanh(Math.min(k * depth, 20)));
+const dispersion = (k: number, depth: number) => Math.sqrt(G * k * Math.tanh(Math.min(k * depth, 20)));
 
 // |domega/dk|, which folds the k-space cell into the amplitude. Without it a
 // spectral density in omega is being read as one in k and the balance between
 // long and short waves is wrong.
-function dispersionDerivative(k, depth) {
+function dispersionDerivative(k: number, depth: number): number {
   const kd = Math.min(k * depth, 20);
   const th = Math.tanh(kd);
   const ch = Math.cosh(kd);
   return (G * ((depth * k) / (ch * ch) + th)) / dispersion(k, depth) / 2;
 }
 
-function tmaCorrection(omega, depth) {
+function tmaCorrection(omega: number, depth: number): number {
   const oh = omega * Math.sqrt(depth / G);
   if (oh <= 1) return 0.5 * oh * oh;
   if (oh < 2) return 1 - 0.5 * (2 - oh) * (2 - oh);
   return 1;
 }
 
-function jonswap(omega, depth, p) {
+function jonswap(omega: number, depth: number, p: SpectrumParams): number {
   const sigma = omega <= p.peakOmega ? 0.07 : 0.09;
   const d = omega - p.peakOmega;
   const r = Math.exp(-(d * d) / (2 * sigma * sigma * p.peakOmega * p.peakOmega));
@@ -159,14 +187,14 @@ function jonswap(omega, depth, p) {
 
 // Cosine-2s spreading. The polynomial is the usual fit to the normalisation
 // integral, which has no closed form.
-function normalisationFactor(s) {
+function normalisationFactor(s: number): number {
   const s2 = s * s, s3 = s2 * s, s4 = s3 * s;
   return s < 5
     ? -0.000564 * s4 + 0.00776 * s3 - 0.044 * s2 + 0.192 * s + 0.163
     : -4.8e-8 * s4 + 1.07e-5 * s3 - 9.53e-4 * s2 + 5.9e-2 * s + 3.93e-1;
 }
 
-function directionSpectrum(theta, omega, p) {
+function directionSpectrum(theta: number, omega: number, p: SpectrumParams): number {
   // Donelan-Banner: the spread narrows away from the peak, and `swell` adds
   // the extra tightening a long-travelled train has.
   const sp = omega > p.peakOmega
@@ -183,7 +211,16 @@ function directionSpectrum(theta, omega, p) {
 // Resolve a cascade's options into JONSWAP parameter blocks (wind sea, plus
 // the swell when its scale is non-zero). alpha and peakOmega depend only on
 // fetch and wind speed, so they are derived once here, not per texel.
-function resolveSpectra(o) {
+/** Fills in the two JONSWAP quantities implied by fetch and wind speed. */
+function withJonswapDerived(p: Omit<SpectrumParams, "alpha" | "peakOmega">): SpectrumParams {
+  return {
+    ...p,
+    alpha: 0.076 * Math.pow((G * p.fetch) / (p.windSpeed * p.windSpeed), -0.22),
+    peakOmega: 22 * Math.pow((p.windSpeed * p.fetch) / (G * G), -0.33),
+  };
+}
+
+function resolveSpectra(o: ResolvedFftOptions): SpectrumParams[] {
   const windAngle = Math.atan2(o.windDir.y, o.windDir.x);
   const out = [{
     scale: 1,
@@ -210,11 +247,7 @@ function resolveSpectra(o) {
       fade: Math.max(sw.smallWaveCutoff, o.smallWaveCutoff),
     });
   }
-  for (const p of out) {
-    p.alpha = 0.076 * Math.pow((G * p.fetch) / (p.windSpeed * p.windSpeed), -0.22);
-    p.peakOmega = 22 * Math.pow((p.windSpeed * p.fetch) / (G * G), -0.33);
-  }
-  return out;
+  return out.map(withJonswapDerived);
 }
 
 // Per-mode height variance at unit amplitude scale, zero outside the
@@ -223,7 +256,7 @@ function resolveSpectra(o) {
 // which is exactly what the old Phillips `P` was being used as. Shared by
 // buildH0Texture and spectrumVariance so the two can never disagree about
 // what a cascade contains.
-function waveSpectrum(kx, kz, depth, specs, kLow, kHigh) {
+function waveSpectrum(kx: number, kz: number, depth: number, specs: SpectrumParams[], kLow: number, kHigh: number): number {
   const k = Math.hypot(kx, kz);
   if (k <= 1e-6 || k < kLow || k >= kHigh) return 0;
   const omega = dispersion(k, depth);
@@ -243,7 +276,7 @@ function waveSpectrum(kx, kz, depth, specs, kLow, kHigh) {
 // Weighted by the cell area dk^2 = (2*pi/L)^2, which is what makes the
 // numbers comparable across cascades of different patch size: P is a
 // spectral *density*, so a mode's variance is P * dk^2, not P.
-export function spectrumVariance(c) {
+export function spectrumVariance(c: OceanFftOptions): number {
   const o = mergeOpts(c);
   const N = o.size;
   const specs = resolveSpectra(o);
@@ -262,7 +295,7 @@ export function spectrumVariance(c) {
 // Amplitude scale that makes a *set* of cascades add up to heightRms of RMS
 // wave height. Their variances sum, so normalizing each one on its own would
 // make the sea grow every time a cascade is added.
-export function cascadeAmpScale(cascades, heightRms) {
+export function cascadeAmpScale(cascades: OceanFftOptions[], heightRms: number): number {
   let v = 0;
   for (const c of cascades) v += spectrumVariance(c);
   return v > 0 ? heightRms / Math.sqrt(v) : 0;
@@ -273,7 +306,7 @@ export function cascadeAmpScale(cascades, heightRms) {
 // Amplitudes carry the shared ampScale, so expected RMS wave height across
 // all cascades == heightRms world units — makes the height knob physical
 // and independent of both `size` and the cascade count.
-function buildH0Texture(o, ampScale) {
+function buildH0Texture(o: ResolvedFftOptions, ampScale: number): THREE.DataTexture {
   const N = o.size;
   const L = o.patchSize;
   const specs = resolveSpectra(o);
@@ -327,7 +360,7 @@ function buildH0Texture(o, ampScale) {
 //   r < m : out = in[j]   + w * in[j+m],  w = +exp(+2i*pi*r/2^s)
 //   r >= m: out = in[j-m] - w * in[j],    w = -exp(+2i*pi*(r-m)/2^s)
 // (the +/- sign folds into the stored twiddle; DIT with bit-reversed input).
-function buildButterflyTexture(N) {
+function buildButterflyTexture(N: number): THREE.DataTexture {
   const stages = Math.round(Math.log2(N));
   const data = new Float32Array(N * stages * 4);
   for (let s = 1; s <= stages; s++) {
@@ -438,7 +471,7 @@ const SPECTRUM_SHADER = /* glsl */ `
 
 // One radix-2 butterfly stage. Reads the precomputed butterfly table
 // (index pair + twiddle with sign folded in) and combines two input texels.
-function fftShader(depName) {
+function fftShader(depName: string): string {
   return /* glsl */ `
     uniform sampler2D uButterfly;
     uniform float uSize;
@@ -480,7 +513,7 @@ function fftShader(depName) {
 // (J < 0 marks pinched crests -> foam). The Jacobian cross terms stay on
 // central differences — they differentiate the *choppy* fields, which have
 // no dedicated spectrum chain; only the height slope went analytic.
-function combineShader(nameA, nameB) {
+function combineShader(nameA: string, nameB: string): string {
   return /* glsl */ `
   uniform float uSize;
   uniform float uPatchSize;
@@ -522,7 +555,7 @@ function combineShader(nameA, nameB) {
 // fades out over ~1/foamDecay seconds. Also packs the water normal into yzw
 // (built from chain C, the analytic slope pair) so the mesh shader gets a
 // filtered normal for free — the texture layout the mesh sees is unchanged.
-function foamShader(nameC) {
+function foamShader(nameC: string): string {
   return /* glsl */ `
   uniform float uDeltaT;
   uniform float uFoamDecay;
@@ -554,7 +587,7 @@ function foamShader(nameC) {
 
 // --- Pipeline factory -------------------------------------------------------
 // Returns { update(dt, t), displacementTexture(), foamTexture(), params }.
-export function createOceanFft(renderer, opts = {}) {
+export function createOceanFft(renderer: THREE.WebGLRenderer, opts: OceanFftOptions = {}) {
   const o = mergeOpts(opts);
   const N = o.size;
   const stages = Math.round(Math.log2(N));
@@ -574,7 +607,7 @@ export function createOceanFft(renderer, opts = {}) {
   // over the whole sea that then takes seconds to decay.
   const flatSeed = gpu.createTexture();
   {
-    const px = flatSeed.image.data;
+    const px = flatSeed.image.data as Float32Array;
     for (let i = 3; i < px.length; i += 4) px[i] = 1.0;
   }
 
@@ -595,9 +628,10 @@ export function createOceanFft(renderer, opts = {}) {
     });
   }
 
-  const fftEnd = {};
-  const specOf = { A: specA, B: specB, C: specC };
-  for (const chain of ["A", "B", "C"]) {
+  type Chain = "A" | "B" | "C";
+  const fftEnd = {} as Record<Chain, Variable>;
+  const specOf: Record<Chain, Variable> = { A: specA, B: specB, C: specC };
+  for (const chain of ["A", "B", "C"] as const) {
     let prev = specOf[chain];
     for (let p = 0; p < 2 * stages; p++) {
       const depName = p === 0 ? `textureSpec${chain}` : `textureFft${chain}${p - 1}`;
@@ -687,7 +721,7 @@ export function createOceanFft(renderer, opts = {}) {
     params: o,
     // Debug handle for live browser eval (Jacobian/foam/mip probing).
     debug: { gpu, combine, foam, specA, specB, specC, fftEnd },
-    update(dt, t) {
+    update(dt: number, t: number) {
       specA.material.uniforms.uTime.value = t;
       specB.material.uniforms.uTime.value = t;
       specC.material.uniforms.uTime.value = t;
