@@ -10,6 +10,7 @@ import { submersion, type Submersion } from "./ocean/underwater/state.js";
 import { underwaterEnabled, underwaterDebug, createUnderwater } from "./ocean/underwater/index.js";
 import { createHeightProbe, type HeightProbe } from "./ocean/underwater/height-probe.js";
 import { seabedEnabled, buildSeabed } from "./seabed/index.js";
+import { causticsEnabled, createCaustics } from "./ocean/underwater/caustics.js";
 import { raysStrength, createGodRays } from "./render/godrays.js";
 import { bloomStrength, createPostPipeline } from "./render/post.js";
 import { runSteps, type Step, type StepTiming } from "./loading/loader.js";
@@ -22,6 +23,7 @@ import type { SkyRig } from "./sky/index.js";
 import type { WaterMedium } from "./ocean/underwater/water.js";
 import type { UnderwaterRig } from "./ocean/underwater/index.js";
 import type { SeabedRig } from "./seabed/index.js";
+import type { CausticsRig } from "./ocean/underwater/caustics.js";
 import type { DemoHandle } from "./core/demo-handle.js";
 
 const canvas = document.getElementById("scene") as HTMLCanvasElement | null;
@@ -113,6 +115,7 @@ let water: WaterMedium | null = null;
 let underwater: UnderwaterRig | null = null;
 let heightProbe: HeightProbe | null = null;
 let seabed: SeabedRig | null = null;
+let caustics: CausticsRig | null = null;
 // Published on the demo handle so tooling can place a shot at the waterline.
 let lastSubmersion: Submersion | null = null;
 let knot!: THREE.Mesh<THREE.TorusKnotGeometry, THREE.MeshStandardMaterial>;
@@ -188,6 +191,9 @@ function frame(dt: number, t: number) {
   // The mask has to be drawn with the same jitter as the frame it will be
   // sampled against, so it waits for beginFrame.
   if (diving && underwater) underwater.renderMask(scene);
+  // The caustic map is world-anchored and snapped to its own texels, so it
+  // only has to be rebuilt while something is actually lit by it.
+  if (diving && caustics) caustics.render(camera.position);
 
   // March the cloud dome into its low-res buffer first; the capture pass
   // (or the `?ocean=0` branch below) composites it over the sky.
@@ -245,6 +251,7 @@ function disposeDemo() {
   window.removeEventListener("resize", onResize);
   cloudRig?.dispose();
   seabed?.dispose();
+  caustics?.dispose();
   underwater?.dispose();
   post.dispose();
   renderer.dispose();
@@ -298,7 +305,7 @@ const WARM_DT = 1 / 60;
 // the bar. `?loading=debug` prints the run's real timings to re-tune these.
 const COST_MS = {
   post: 20, sky: 5, clouds: 3600, godRays: 5, ocean: 700,
-  water: 1, underwater: 5, seabed: 420,
+  water: 1, underwater: 5, seabed: 420, caustics: 30,
   // Shader compilation swings from ~12 ms (driver cache warm) to ~220 ms cold.
   capture: 5, knot: 10, compile: 120, warm: 200,
   // Savings when the corresponding flag turns a sub-bake off.
@@ -354,12 +361,21 @@ async function boot(): Promise<DemoHandle> {
         steps.push({
           label: "Seabed",
           weight: COST_MS.seabed,
-          bake: () => buildSeabed(scene, renderer, { taa: post.taa, water: water!.uniforms }),
+          bake: () => buildSeabed(scene, renderer, {
+            taa: post.taa, water: water!.uniforms, caustics: causticsEnabled(),
+          }),
         });
+      }
+      if (causticsEnabled()) {
+        steps.push(sync("Caustics", COST_MS.caustics, () =>
+          createCaustics(renderer, ocean!, water!, { seabed })));
       }
       steps.push(sync("Underwater", COST_MS.underwater, () => {
         heightProbe = createHeightProbe(renderer, ocean!);
-        return createUnderwater(renderer, camera, ocean!, water!, { taa: post.taa });
+        return createUnderwater(renderer, camera, ocean!, water!, {
+          taa: post.taa,
+          caustics: caustics !== null,
+        });
       }));
     }
   }
@@ -399,6 +415,7 @@ async function boot(): Promise<DemoHandle> {
         case "Ocean": ocean = value as OceanRig; break;
         case "Reflection capture": capture = value as SceneCapture; break;
         case "Seabed": seabed = value as SeabedRig; break;
+        case "Caustics": caustics = value as CausticsRig; break;
         case "Underwater": underwater = value as UnderwaterRig; break;
       }
     },
@@ -450,6 +467,7 @@ async function boot(): Promise<DemoHandle> {
     resetTemporal() {
       post.taa.reset();
       cloudRig?.reset();
+      underwater?.reset();
     },
   };
   window.__demo = demo;

@@ -16,7 +16,8 @@
   uniform vec3 uWaterSigmaS;      // scattering, m^-1
   uniform vec3 uWaterSigmaT;      // extinction = absorption + scattering, m^-1
   uniform vec3 uWaterKd;          // diffuse downwelling attenuation, m^-1
-  uniform vec3 uWaterIrradiance;  // E_D0, just under the surface
+  uniform vec3 uWaterIrradiance;  // E_D0 (sun + sky), just under the surface
+  uniform vec3 uWaterSunIrradiance; // the sun's share of it, alone
   uniform vec3 uWaterSunDirection; // sun after refraction, pointing downward
   uniform float uWaterLevel;
   uniform float uWaterPhaseG;
@@ -66,12 +67,42 @@
     return uWaterSigmaS * waterDownwelling(originDepth) * integral / (4.0 * WATER_PI);
   }
 
-  #ifndef WATER_CAUSTICS
+  #ifdef WATER_CAUSTICS
+  uniform sampler2D tCaustic;
+  uniform vec2 uCausticCenter;
+  uniform float uCausticExtent;
+  uniform float uCausticPlaneY;
+  uniform float uCausticStrength;
+
   /**
-   * Caustic intensity at a point, with no caustic map: unit everywhere, so
-   * callers multiply by it unconditionally and never carry a branch.
+   * How much brighter or darker than an unrippled sea the sunlight is here.
+   * 1 is "as if the surface were flat".
+   *
+   * The map is indexed by where light *lands*, so a point in mid-water has to
+   * be walked down its refracted sun ray to the floor before the map is read
+   * -- which is what makes a shaft carry the banding of the patch of sand it
+   * ends on rather than a pattern of its own. `aboveFloor` is how far it has
+   * to travel: zero for a point already on the sand, whose landing point is
+   * itself and which the splat has already placed exactly.
    */
-  float waterCaustic(vec3 p, float depth) { return 1.0; }
+  float waterCaustic(vec3 p, float aboveFloor) {
+    float t = max(aboveFloor, 0.0) / max(-uWaterSunDirection.y, 0.05);
+    vec2 q = p.xz + uWaterSunDirection.xz * t;
+    vec2 uv = (q - uCausticCenter) / uCausticExtent + 0.5;
+    // Fade to unity at the rim, so the map's edge is a change in contrast
+    // rather than a visible square drawn on the sea floor.
+    vec2 e = smoothstep(0.0, 0.08, uv) * smoothstep(1.0, 0.92, uv);
+    float edge = e.x * e.y;
+    if (edge <= 0.0) return 1.0;
+    float c = texture2D(tCaustic, uv).r;
+    return mix(1.0, 1.0 + (c - 1.0) * uCausticStrength, edge);
+  }
+  #else
+  /**
+   * Caustic intensity with no map: unit everywhere, so callers multiply by it
+   * unconditionally and never carry a branch of their own.
+   */
+  float waterCaustic(vec3 p, float aboveFloor) { return 1.0; }
   #endif
 
   #ifdef WATER_SHAFTS
@@ -100,8 +131,8 @@
       vec3 p = origin + dir * t;
       float depth = max(uWaterLevel - p.y, 0.0);
       vec3 sun = exp(-uWaterSigmaT * (depth * sunRun));
-      sum += sun * waterCaustic(p, depth) * exp(-uWaterSigmaT * t);
+      sum += sun * waterCaustic(p, p.y - uCausticPlaneY) * exp(-uWaterSigmaT * t);
     }
-    return uWaterSigmaS * uWaterIrradiance * phase * sum * dt;
+    return uWaterSigmaS * uWaterSunIrradiance * phase * sum * dt * WATER_SHAFT_STRENGTH;
   }
   #endif

@@ -40,15 +40,19 @@
     // Sunlight reaching this depth, along the refracted ray. uWaterSunDirection
     // points downward, so the cosine wants its negation.
     float sunRun = 1.0 / max(-uWaterSunDirection.y, 0.05);
-    vec3 sun = uWaterIrradiance * exp(-uWaterSigmaT * (depth * sunRun));
+    vec3 sun = uWaterSunIrradiance * exp(-uWaterSigmaT * (depth * sunRun));
     float ndl = max(dot(N, -uWaterSunDirection), 0.0);
 
     // Ambient is the diffuse downwelling at this depth -- the same quantity
     // the volume's multiple-scattering term is built on, so the floor and the
     // water in front of it agree about how dark it is down here.
-    vec3 ambient = waterDownwelling(depth) * 0.16;
+    //
+    // The split between the two matters more than either does alone: only the
+    // direct term carries the caustics, so an ambient that dominates it
+    // washes the pattern off the sand however bright the map is.
+    vec3 ambient = waterDownwelling(depth) * SEABED_AMBIENT;
 
-    vec3 col = albedo * (ambient + sun * ndl * waterCaustic(vWorldPos, depth) * 0.09);
+    vec3 col = albedo * (ambient + sun * ndl * waterCaustic(vWorldPos, 0.0) * SEABED_DIRECT);
 
     gl_FragColor = vec4(col, 1.0);
     #ifdef TAA_ENABLED

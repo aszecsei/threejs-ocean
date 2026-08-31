@@ -19,12 +19,19 @@ import SEABED_FRAG from "./shaders/seabed.frag.glsl";
 // It is an ordinary scene object, so it rides the capture pass with the torus
 // knot and the underwater resolve fogs it by depth like anything else.
 //
-// From above the water it is invisible: at fifteen metres the transmittance is
-// a few percent in blue and effectively zero in red, so the ocean's flat body
-// colour stays honest and needs no refraction of its own.
+// From above the water it never shows: the ocean surface does not refract
+// what is behind it, it shades a flat body colour, and it draws over the
+// floor entirely. That is a simplification rather than a consequence -- a
+// surface that did refract would show the sand at this depth -- but it is the
+// one the ocean shader already made, and the seabed does not change it.
 
 export const SEABED_DEFAULTS = {
-  DEPTH: 15.0,        // mean depth below the water line, metres
+  // Mean depth below the water line, metres. Sets how the caustics read more
+  // than anything else does: the wavelengths that focus near the floor are
+  // the only ones that draw a pattern on it, and deeper water selects longer
+  // ones. By fifteen metres the net has spread into broad soft cells; ten
+  // keeps it legible while staying dark enough to feel like open sea.
+  DEPTH: 10.0,
   DISC_RADIUS: 380.0, // matches the ocean, so there is no gap at the horizon
   DISC_RINGS: 120,    // half the ocean's: the water hides the far field anyway
   DISC_SECTORS: 128,
@@ -36,6 +43,12 @@ export const SEABED_DEFAULTS = {
   MACRO_TILE: 6.5,    // dune tiling as a multiple of TILE (~170 m)
   MACRO_RELIEF: 4.0,  // dune height as a multiple of RELIEF
   NORMAL_STRENGTH: 1.6,
+  // How the floor's light divides between the diffuse downwelling and the
+  // direct refracted beam. Only the direct half carries caustics, so this
+  // ratio -- not the map's own contrast -- is what decides whether the
+  // pattern reads on the sand.
+  AMBIENT: 0.05,
+  DIRECT: 0.30,
 
   SAND_COLOR: 0xa89272,
   COARSE_COLOR: 0x6b6355,
@@ -57,6 +70,8 @@ export interface SeabedOptions extends Partial<typeof SEABED_DEFAULTS> {
    *  by the refracted sun and shaded against the same downwelling the volume
    *  uses, so it cannot be built without them. */
   water: Record<string, Uniform<unknown>>;
+  /** Whether a caustic map exists to light the sand with. */
+  caustics?: boolean;
 }
 
 export function* buildSeabed(
@@ -96,7 +111,12 @@ export function* buildSeabed(
       vertexShader: SEABED_VERT,
       fragmentShader: SEABED_FRAG,
       glslVersion: taaConfig.glslVersion,
-      defines: { ...taaConfig.defines },
+      defines: {
+        ...taaConfig.defines,
+        ...(opts.caustics ? { WATER_CAUSTICS: "" } : {}),
+        SEABED_AMBIENT: o.AMBIENT.toFixed(4),
+        SEABED_DIRECT: o.DIRECT.toFixed(4),
+      },
     })
   );
   mesh.frustumCulled = false;

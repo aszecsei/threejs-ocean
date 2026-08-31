@@ -27,6 +27,10 @@
   uniform float uCameraSubmerged;
   /** Camera height above the water surface, signed; negative when under. */
   uniform float uMeniscusHeight;
+  #ifdef WATER_SHAFTS
+  /** Frame counter, so the march's dither rotates and TAA averages it out. */
+  uniform float uShaftFrame;
+  #endif
 
   varying vec2 vUv;
 
@@ -48,6 +52,21 @@
    * back to where the camera itself is, which the height probe reads off
    * the FFT rather than estimating.
    */
+  #ifdef WATER_SHAFTS
+  /**
+   * Sub-step offset for the shaft march, in [0, 1).
+   *
+   * Interleaved gradient noise: it decorrelates neighbouring pixels well
+   * enough that sixteen steps stop reading as sixteen bands, and rotating it
+   * per frame turns what is left into noise for TAA to average away rather
+   * than a fixed pattern it would happily converge on.
+   */
+  float waterShaftJitter(vec2 p) {
+    vec3 m = vec3(0.06711056, 0.00583715, 52.9829189);
+    return fract(m.z * fract(dot(p + uShaftFrame * 5.588238, m.xy)));
+  }
+  #endif
+
   bool maskWet(vec4 m) {
     return m.b > 0.5 ? m.r < 0.5 : uCameraSubmerged > 0.5;
   }
@@ -117,6 +136,17 @@
       // away through the sea -- rather than a single frame where the whole
       // image flips.
       if (abs(port) < 1.0 && dir.y < port) wet = true;
+    #endif
+
+    #if UNDERWATER_DEBUG == 3
+      // The caustic map itself, 1.0 (a flat sea) shown as mid grey so both
+      // the convergences and the shadows between them are readable.
+      #ifdef WATER_CAUSTICS
+        gl_FragColor = vec4(vec3(texture2D(tCaustic, vUv).r * 0.5), 1.0);
+      #else
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+      #endif
+      return;
     #endif
 
     #if UNDERWATER_DEBUG == 1

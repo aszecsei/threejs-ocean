@@ -34,9 +34,20 @@ export const UNDERWATER_DEFAULTS = {
   MENISCUS_SMEAR: 0.035,   // how far across the line the film drags, uv
   MENISCUS_LIFT: 1.1,      // brightness of the rim above the lip
   MENISCUS_STRENGTH: 0.9,
+
+  // Single-scattering shafts.
+  SHAFT_STEPS: 16,
+  /** How far along the view ray the march goes, metres. Past this the water
+   *  has taken the light anyway, and it bounds the cost of a ray that looks
+   *  down the length of the sea. */
+  SHAFT_RANGE: 70.0,
+  /** Art control on the shafts. The physical integral lands where the rest of
+   *  the scene's calibration puts it, which is brighter than reads well
+   *  against an ACES curve; this is the one knob that says so honestly. */
+  SHAFT_STRENGTH: 0.4,
 };
 
-export const UNDERWATER_DEBUG_MODES = ["mask", "depth"] as const;
+export const UNDERWATER_DEBUG_MODES = ["mask", "depth", "caustics"] as const;
 export type UnderwaterDebugMode = (typeof UNDERWATER_DEBUG_MODES)[number] | "off";
 
 /** `?underwater=0` restores the pre-feature behaviour (a hole in the sea). */
@@ -44,7 +55,7 @@ export function underwaterEnabled() {
   return flags.enabled("underwater");
 }
 
-/** `?underwater-debug=mask|depth` shows an intermediate instead of the frame. */
+/** `?underwater-debug=mask|depth|caustics` shows an intermediate. */
 export function underwaterDebug(): UnderwaterDebugMode {
   return flags.oneOf("underwater-debug", UNDERWATER_DEBUG_MODES, "off");
 }
@@ -54,11 +65,21 @@ export function meniscusEnabled() {
   return flags.enabled("meniscus");
 }
 
+/** `?shafts=0` drops single scattering; `?shafts=<n>` sets the step count. */
+export function shaftSteps() {
+  if (!flags.enabled("shafts")) return 0;
+  return flags.int("shafts", UNDERWATER_DEFAULTS.SHAFT_STEPS, { min: 1, max: 64 });
+}
+
 export interface UnderwaterOptions extends Partial<typeof UNDERWATER_DEFAULTS> {
   taa?: TaaApi | null;
   debug?: UnderwaterDebugMode;
   /** The waterline film; defaults to the `?meniscus` flag. */
   meniscus?: boolean;
+  /** Shaft march steps; 0 disables. Defaults to the `?shafts` flag. */
+  shafts?: number;
+  /** Whether a caustic map exists to band the shafts with. */
+  caustics?: boolean;
 }
 
 export function createUnderwater(
@@ -72,6 +93,8 @@ export function createUnderwater(
   const taa = opts.taa ?? null;
   const debug = opts.debug ?? underwaterDebug();
   const meniscus = opts.meniscus ?? meniscusEnabled();
+  const shafts = opts.shafts ?? shaftSteps();
+  const caustics = opts.caustics ?? false;
   const taaConfig = taaMaterialConfig(taa);
   const size = renderer.getDrawingBufferSize(new THREE.Vector2());
 
@@ -136,6 +159,7 @@ export function createUnderwater(
       uCameraFar: { value: camera.far },
       uCameraSubmerged: { value: 0 },
       uMeniscusHeight: { value: 1 },
+      ...(shafts > 0 ? { uShaftFrame: { value: 0 } } : {}),
       ...medium.uniforms,
     },
     glslVersion: taaConfig.glslVersion,
@@ -151,9 +175,19 @@ export function createUnderwater(
             MENISCUS_STRENGTH: o.MENISCUS_STRENGTH.toFixed(3),
           }
         : {}),
+      ...(shafts > 0
+        ? {
+            WATER_SHAFTS: "",
+            WATER_SHAFT_STEPS: String(shafts),
+            WATER_SHAFT_RANGE: o.SHAFT_RANGE.toFixed(2),
+            WATER_SHAFT_STRENGTH: o.SHAFT_STRENGTH.toFixed(4),
+          }
+        : {}),
+      ...(caustics ? { WATER_CAUSTICS: "" } : {}),
       // Always defined: the GLSL ES preprocessor rejects an unknown
       // identifier in `#if`, where C would have quietly substituted 0.
-      UNDERWATER_DEBUG: debug === "mask" ? "1" : debug === "depth" ? "2" : "0",
+      UNDERWATER_DEBUG:
+        debug === "mask" ? "1" : debug === "depth" ? "2" : debug === "caustics" ? "3" : "0",
     },
     // Matches capture-blit: the pass owns every pixel and carries the frame's
     // depth across for the TAA resolve that reads it next.
@@ -165,9 +199,15 @@ export function createUnderwater(
   });
 
   const u = resolveMaterial.uniforms;
+  // Rotates the shaft march's dither. Reset with the temporal history, so a
+  // deterministic capture always dithers the same way.
+  let shaftFrame = 0;
 
   return {
     get maskTexture() { return maskTarget.texture; },
+
+    /** Drops the frame-varying dither, alongside the other temporal state. */
+    reset() { shaftFrame = 0; },
 
     resize() {
       renderer.getDrawingBufferSize(size);
@@ -233,6 +273,7 @@ export function createUnderwater(
       u.uCameraPosition.value.setFromMatrixPosition(camera.matrixWorld);
       u.uCameraNear.value = camera.near;
       u.uCameraFar.value = camera.far;
+      if (u.uShaftFrame) u.uShaftFrame.value = shaftFrame++;
 
       quad.material = resolveMaterial;
       renderer.setRenderTarget(scratch);

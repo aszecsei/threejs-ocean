@@ -154,11 +154,28 @@ export function createWaterMedium(
     uWaterCameraDepth: { value: 0 },
     /** Sun direction below the surface (points downward). */
     uWaterSunDirection: { value: new THREE.Vector3(0, -1, 0) },
-    /** E_D0: downwelling irradiance just under the surface, linear RGB. */
+    /** E_D0: total downwelling irradiance just under the surface, sun and
+     *  sky together. Drives the multiple-scattering term and the ambient. */
     uWaterIrradiance: { value: new THREE.Vector3(1, 1, 1) },
+    /** The sun's share of E_D0 alone. Single scattering is scattering *of the
+     *  beam*, so feeding it the sky's share too would put a sunbeam's worth
+     *  of light into every direction the sun is not in. */
+    uWaterSunIrradiance: { value: new THREE.Vector3(1, 1, 1) },
+
+    // The caustic map. Declared here rather than in the caustics rig so that
+    // everything holding the medium can read it without a second wiring
+    // step -- and so the ocean, the seabed and the volume are looking at one
+    // map by construction.
+    tCaustic: { value: null as THREE.Texture | null },
+    uCausticCenter: { value: new THREE.Vector2() },
+    uCausticExtent: { value: 1 },
+    /** World y of the plane the photons were splatted onto. */
+    uCausticPlaneY: { value: 0 },
+    uCausticStrength: { value: 1 },
   };
 
   const irradiance = uniforms.uWaterIrradiance.value;
+  const sunIrradiance = uniforms.uWaterSunIrradiance.value;
 
   return {
     name,
@@ -183,10 +200,11 @@ export function createWaterMedium(
       const through = elevation * (1 - waterFresnel(elevation)) * o.SUN_IRRADIANCE;
       const sc = sunColor.value;
       const zc = zenithColor.value;
+      sunIrradiance.set(sc.r * through, sc.g * through, sc.b * through);
       irradiance.set(
-        sc.r * through + zc.r * o.SKY_IRRADIANCE,
-        sc.g * through + zc.g * o.SKY_IRRADIANCE,
-        sc.b * through + zc.b * o.SKY_IRRADIANCE
+        sunIrradiance.x + zc.r * o.SKY_IRRADIANCE,
+        sunIrradiance.y + zc.g * o.SKY_IRRADIANCE,
+        sunIrradiance.z + zc.b * o.SKY_IRRADIANCE
       );
     },
   };
