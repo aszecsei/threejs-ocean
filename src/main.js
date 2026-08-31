@@ -68,6 +68,25 @@ window.__demo = {
   get ocean() { return ocean; },
   get capture() { return capture; },
   get godRays() { return godRays; },
+
+  // --- Deterministic capture (screenshot regression testing) --------------
+  // Stop the real-time loop and drive `frame` on a synthetic fixed-step clock,
+  // so a run always lands on the same cloud phase, swell phase and TAA
+  // history. Without this, repeat captures of an unchanged build differ by
+  // ~10/255 in mean channel value -- enough to hide a real regression.
+  pause() { renderer.setAnimationLoop(null); },
+  resume() { renderer.setAnimationLoop(() => frame(clock.getDelta(), clock.elapsedTime)); },
+  // Renders `count` frames of exactly `dt` seconds starting from t = 0.
+  // Call after pause(); reset() first to clear temporal history.
+  stepFrames(count = 60, dt = 1 / 60) {
+    for (let i = 0; i < count; i++) frame(dt, i * dt);
+  },
+  // Drops every accumulated temporal buffer so stepFrames starts from a known
+  // state rather than whatever the real-time loop left behind.
+  resetTemporal() {
+    post.taa.reset();
+    cloudRig?.reset();
+  },
 };
 
 // --- Sky & clouds -------------------------------------------------------
@@ -169,10 +188,11 @@ const clock = new THREE.Clock();
 let frames = 0;
 let fpsTimer = 0;
 
-renderer.setAnimationLoop(() => {
-  const dt = clock.getDelta();
-  const t = clock.elapsedTime;
-
+// One frame at an explicit (dt, t). Split out of the animation loop so test
+// tooling can drive the demo on a synthetic clock -- with the real clock the
+// cloud field, FFT swell and TAA history all land at a different phase on
+// every run, which swamps screenshot comparison. See __demo.stepFrames.
+function frame(dt, t) {
   // Drive the FFT simulation and rebind its ping-ponged textures.
   if (ocean) ocean.update(dt, t);
 
@@ -237,4 +257,6 @@ renderer.setAnimationLoop(() => {
     frames = 0;
     fpsTimer = 0;
   }
-});
+}
+
+renderer.setAnimationLoop(() => frame(clock.getDelta(), clock.elapsedTime));
