@@ -108,7 +108,7 @@
     float wispness;
   };
 
-  vec3 cloudNoiseCoordinates(vec3 p, float tower, float height, out vec3 detailQ, out vec3 wispQ) {
+  vec3 cloudNoiseCoordinates(vec3 p, float tower, float height, out vec3 detailQ, out vec3 wispQ, out vec2 wispFlow) {
     vec3 q = p * NOISE_SCALE;
     vec2 wind = uTime * WIND_SPEED * WIND_DIR;
     detailQ = (q + vec3(wind.x,0.0,wind.y))*EROSION_SCALE;
@@ -126,11 +126,16 @@
     #ifdef CLOUD_WISP
       // Wisp domain: ~3x the finest erosion band, read from the same detail
       // volume (a smaller bake would give the same voxels per Worley cell,
-      // so it buys nothing). Swizzled and offset so it does not correlate
-      // with the bands it is drawn from; stronger curl and a fixed vertical
-      // squash so it carves horizontal filaments rather than pebbles.
-      wispQ = detailQ.zxy*WISP_SCALE + vec3(0.29,0.61,0.13) + curl*(CURL_STRENGTH*WISP_CURL);
-      wispQ.y *= WISP_SQUASH;
+      // so it buys nothing), with a stronger curl warp. Left in world axes
+      // here; the wisp block below rotates it into the local flow frame,
+      // stretches it along the flow and squashes it vertically, then
+      // swizzles and offsets it so it does not correlate with the bands it
+      // is drawn from.
+      wispQ = detailQ*WISP_SCALE + curl*(CURL_STRENGTH*WISP_CURL);
+      // Local flow direction the filaments are drawn along: the wind, bent
+      // per sample by the curl field so tendrils follow the shear around
+      // each billow instead of one combed heading. Tops streak less.
+      wispFlow = normalize(WIND_DIR + curl.xy*(WISP_FLOW*(1.0-0.5*height)));
     #else
       wispQ = detailQ;
     #endif
@@ -193,8 +198,8 @@
       s.profile=mix(cu,cb,s.tower);
     #endif
     if (s.profile<=0.0) return s;
-    vec3 detailQ, wispQ;
-    vec3 q=cloudNoiseCoordinates(vec3(shearedXZ.x,p.y,shearedXZ.y),s.tower,s.height,detailQ,wispQ);
+    vec3 detailQ, wispQ; vec2 wispFlow;
+    vec3 q=cloudNoiseCoordinates(vec3(shearedXZ.x,p.y,shearedXZ.y),s.tower,s.height,detailQ,wispQ,wispFlow);
     s.baseNoise=cloudBaseSignal(q,octaves,erode);
     #ifdef CLOUD_MID_BAND
       // Experimental band filling the ~50-80 unit gap between base billows
@@ -248,11 +253,50 @@
     float shell=1.0-smoothstep(0.0,WISP_SHELL,d0);
     #ifdef CLOUD_WISP
       if (erode && wispFade>0.0 && d0>0.0 && shell>0.0) {
-        #ifdef CLOUD_NOISE_TEXTURE
-          float wispN=dot(texture(tCloudDetailNoise,wispQ).rgb,vec3(0.25,0.35,0.40));
-        #else
-          float wispN=cloudWorleyFbm(wispQ*3.0);
+        vec2 flow=wispFlow;
+        #if defined(CLOUD_REFINE) && defined(CLOUD_WISP_GRADIENT)
+          // Refinement pass only, and only inside the shell: steer the
+          // stretch along the horizontal gradient of the base shape, i.e.
+          // out of the mass. Filaments peel away from the cloud rather than
+          // combing along the wind. Two extra base fetches per sample;
+          // where the base is flat the wind frame stays in charge.
+          float baseX=cloudBaseSignal(q+vec3(WISP_GRADIENT_EPS,0.0,0.0),octaves,erode);
+          float baseZ=cloudBaseSignal(q+vec3(0.0,0.0,WISP_GRADIENT_EPS),octaves,erode);
+          vec2 outward=vec2(s.baseNoise-baseX,s.baseNoise-baseZ);
+          float slope=length(outward);
+          vec2 steered=mix(flow,outward/max(slope,1e-5),WISP_GRADIENT*smoothstep(0.0,WISP_GRADIENT_MIN,slope));
+          flow=steered/max(length(steered),1e-4);
         #endif
+        // Flow frame: rotate the flow onto +x, stretch that axis so Worley
+        // cells become several cells long along the flow and one across,
+        // then squash vertically so they are flat. Isotropic cells can only
+        // make crumbs; this is what makes a tendril.
+        mat2 flowRot=mat2(flow.x,-flow.y,flow.y,flow.x);
+        vec2 wf=flowRot*wispQ.xz;
+        float along=wf.x/WISP_STRETCH;
+        vec3 wq=vec3(along,wispQ.y*WISP_SQUASH,wf.y).zxy+vec3(0.29,0.61,0.13);
+        #ifdef CLOUD_NOISE_TEXTURE
+          float wispN=dot(texture(tCloudDetailNoise,wq).rgb,vec3(0.25,0.35,0.40));
+        #else
+          float wispN=cloudWorleyFbm(wq*3.0);
+        #endif
+        #ifdef CLOUD_REFINE
+          // Finer second octave, half strength. The half-res march cannot
+          // resolve anything under ~2 px and its temporal prefilter averages
+          // the edge pixels anyway; the refinement pass has neither limit.
+          // The two passes share the coarse structure (what keeps the seam
+          // invisible) and differ only in the fringe the edge weight blends.
+          #ifdef CLOUD_NOISE_TEXTURE
+            float wispN2=dot(texture(tCloudDetailNoise,wq*2.0+vec3(0.47,0.19,0.83)).rgb,vec3(0.25,0.35,0.40));
+          #else
+            float wispN2=cloudWorleyFbm(wq*6.0+vec3(0.47,0.19,0.83));
+          #endif
+          wispN=(wispN+0.5*wispN2)/1.5;
+        #endif
+        // Taper: the upward push peaks at a cell's upwind root and fades to
+        // nothing at its downwind end, so a stretched crumb thins to a tip.
+        // One period per dominant Worley cell along the stretched axis.
+        float taper=mix(1.0,1.0-fract(along*WISP_TAPER_CELLS),WISP_TAPER);
         // Perturbs the shape signal itself, ahead of the erosion, so the
         // wisp pattern decides where the erosion bites: high values survive
         // it as tendrils and detached crumbs, low values open gaps. A second
@@ -262,7 +306,7 @@
         // so the shadow map and the occupancy prepass still bound it.
         float k=WISP_STRENGTH*wispFade*shell;
         float delta=(wispN-0.45)*k;
-        d0=clamp(d0+delta*(delta>0.0?WISP_PUFF:1.0),0.0,1.0);
+        d0=clamp(d0+delta*(delta>0.0?WISP_PUFF*taper:1.0),0.0,1.0);
       }
     #endif
     float d1=d0;

@@ -43,6 +43,11 @@ export function cloudMidBand() { return flags.strength("cloud-midband"); }
 // High-frequency wisp band eroding the thin shell of every edge
 // (?cloud-wisp=0 disables, or a 0-2 strength multiplier).
 export function cloudWisp() { return flags.strength("cloud-wisp"); }
+// Steers the wisp stretch along the outward gradient of the base shape in
+// the refinement pass (?cloud-wisp-gradient=0 falls back to the wind frame
+// there too). Two extra base fetches per shell sample; A/B it with
+// scripts/measure-frame-time.js.
+export function cloudWispGradient() { return flags.enabled("cloud-wisp-gradient"); }
 // Silver-lining rim term plus the fine-LOD first light step it depends on
 // (?cloud-rim=0 disables, or a 0-2 strength multiplier).
 export function cloudRim() { return flags.strength("cloud-rim"); }
@@ -188,11 +193,6 @@ export function* buildClouds(
     ...densityDefines,
     ...cirrusDefines,
     ...(occupancy ? { CLOUD_OCCUPANCY: "" } : {}),
-    PRIMARY_STEPS: "160", LIGHT_STEPS: "8", LIGHT_STEP0: len(1), LIGHT_GROWTH: "1.6",
-    FAR_STEP_GROWTH: (cloudFarGrowth() / 9000).toFixed(8),
-    // Shade collapse rate of the ambient term; pushing it up darkens a
-    // shadowed near edge against a lit far mass (layer separation).
-    SHADE_FALLOFF: "0.9",
     // Span-scaled steps (march.core.glsl, occupancySpanStep). Only the
     // refinement pass calls it so far: its history is simple and it marches
     // only edge pixels, where finer sampling shows. The dome feeds the
@@ -201,6 +201,11 @@ export function* buildClouds(
     // (3 world units) bounds the cost of a short span; the ratio cap keeps
     // neighbouring tiles' noise character within what the resolve hides.
     ...(occupancy && cloudSpanSteps() ? { OCCUPANCY_SPAN_STEPS: "", OCCUPANCY_MIN_STEP: len(0.05), OCCUPANCY_MAX_RATIO_LOG2: "2.0" } : {}),
+    PRIMARY_STEPS: "160", LIGHT_STEPS: "8", LIGHT_STEP0: len(1), LIGHT_GROWTH: "1.6",
+    FAR_STEP_GROWTH: (cloudFarGrowth() / 9000).toFixed(8),
+    // Shade collapse rate of the ambient term; pushing it up darkens a
+    // shadowed near edge against a lit far mass (layer separation).
+    SHADE_FALLOFF: "0.9",
     // Wisp band: view-shader only. The shadow map compiles densityDefines and
     // must never pay for it; the coarse path ignores it anyway. The shell
     // width and fade range are emitted unconditionally because wispness
@@ -210,9 +215,20 @@ export function* buildClouds(
     // 500 units away; finer than that the temporal filters average it into
     // a uniform fuzz. Strength 0.85 is just under where the fringe turns
     // grainy at full res.
+    // Filaments: the wisp domain is stretched WISP_STRETCH along the local
+    // flow (the wind bent by WISP_FLOW of the curl field) and squashed
+    // WISP_SQUASH vertically. The reference tendrils run 4-6 cells long.
+    // WISP_TAPER fades each cell's puff from root to downwind tip, one
+    // period per dominant detail cell (8 per texture repeat). The gradient
+    // steering and its fetch radius (base-noise units; ~one tenth of a
+    // base cell) only compile into the refinement pass.
     ...(cloudWisp() > 0 ? {
       CLOUD_WISP: "", WISP_STRENGTH: (0.85 * cloudWisp()).toFixed(3),
       WISP_SCALE: "2.0", WISP_CURL: "1.8", WISP_SQUASH: "1.6", WISP_PUFF: "1.0",
+      WISP_STRETCH: "4.0", WISP_FLOW: "0.6", WISP_TAPER: "0.7", WISP_TAPER_CELLS: "8.0",
+      ...(cloudWispGradient() ? {
+        CLOUD_WISP_GRADIENT: "", WISP_GRADIENT: "0.7", WISP_GRADIENT_EPS: "0.15", WISP_GRADIENT_MIN: "0.05",
+      } : {}),
     } : {}),
     ...(cloudRim() > 0 ? {
       CLOUD_RIM: "", RIM_STRENGTH: (0.25 * cloudRim()).toFixed(3),

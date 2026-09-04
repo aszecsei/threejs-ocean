@@ -58,4 +58,29 @@ describe("edge refinement shader", () => {
     const block = DENSITY.slice(DENSITY.indexOf("#ifdef CLOUD_WISP", DENSITY.indexOf("float shell=")));
     expect(block).toMatch(/if \(erode && wispFade>0\.0/);
   });
+
+  it("pays for the filament gradient only in the refinement pass, inside the shell gate", () => {
+    // The gradient steering costs two extra base fetches per sample. It
+    // must sit inside the wisp block (behind the shell gate) and behind
+    // CLOUD_REFINE, so the half-res dome, the shadow map and the occupancy
+    // prepass never compile it.
+    const wispBlock = DENSITY.slice(DENSITY.indexOf("#ifdef CLOUD_WISP", DENSITY.indexOf("float shell=")));
+    const gate = wispBlock.indexOf("if (erode && wispFade>0.0");
+    const gradient = wispBlock.indexOf("WISP_GRADIENT_EPS");
+    expect(gate).toBeGreaterThan(-1);
+    expect(gradient).toBeGreaterThan(gate);
+    const guard = wispBlock.lastIndexOf("#if defined(CLOUD_REFINE) && defined(CLOUD_WISP_GRADIENT)", gradient);
+    expect(guard).toBeGreaterThan(gate);
+    // The second, finer octave is refinement-only for the same reason.
+    const octave = wispBlock.indexOf("wispN2");
+    expect(wispBlock.lastIndexOf("#ifdef CLOUD_REFINE", octave)).toBeGreaterThan(gate);
+  });
+
+  it("keeps the base-shape gradient out of the shadow and occupancy density paths", () => {
+    // Everything before the wisp block is shared with every caller; the
+    // only base-signal reads there are the shape itself and the mid band.
+    const shared = DENSITY.slice(0, DENSITY.indexOf("float shell="));
+    expect(shared).not.toContain("WISP_GRADIENT");
+    expect(shared).not.toContain("WISP_STRETCH");
+  });
 });
