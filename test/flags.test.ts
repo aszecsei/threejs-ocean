@@ -70,6 +70,34 @@ describe("int", () => {
   });
 });
 
+describe("strength", () => {
+  it("falls back when absent", () => {
+    expect(withSearch("", () => flags.strength("x"))).toBe(1);
+    expect(withSearch("", () => flags.strength("x", 0))).toBe(0);
+  });
+
+  it("reads a bare flag or =true as full strength", () => {
+    expect(withSearch("?x", () => flags.strength("x", 0))).toBe(1);
+    expect(withSearch("?x=", () => flags.strength("x", 0))).toBe(1);
+    expect(withSearch("?x=true", () => flags.strength("x", 0))).toBe(1);
+  });
+
+  it("reads junk as off, not as the default", () => {
+    // `?cloud-wisp=abc` should visibly do something (switch off) rather than
+    // silently keeping the default and hiding the typo.
+    expect(withSearch("?x=abc", () => flags.strength("x"))).toBe(0);
+    expect(withSearch("?x=Infinity", () => flags.strength("x"))).toBe(0);
+  });
+
+  it("clamps numeric values to [0, max]", () => {
+    expect(withSearch("?x=0", () => flags.strength("x"))).toBe(0);
+    expect(withSearch("?x=0.5", () => flags.strength("x"))).toBe(0.5);
+    expect(withSearch("?x=5", () => flags.strength("x"))).toBe(2);
+    expect(withSearch("?x=5", () => flags.strength("x", 1, 3))).toBe(3);
+    expect(withSearch("?x=-1", () => flags.strength("x"))).toBe(0);
+  });
+});
+
 describe("oneOf", () => {
   const modes = ["velocity", "history"] as const;
 
