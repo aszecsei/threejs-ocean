@@ -28,11 +28,16 @@
       // is fine, each accumulator averages its own.
       float jitter=fract(texelFetch(tCloudBlueNoise,ivec2(gl_FragCoord.xy)&63,0).r+uFrameIndex*0.61803398875);
       float mu=dot(dir,sd),airMass=1.0-0.7*max(dir.y,0.0);
-      // Same step sizing as the dome so per-sample energy matches: a refined
-      // pixel must converge to the same value as its half-res neighbour.
-      float baseStep=(t1-t0)/float(PRIMARY_STEPS);
+      // The slab step is the dome's sizing; the span step spends the
+      // iterations the occupancy prepass freed on finer sampling of this
+      // ray (a no-op without OCCUPANCY_SPAN_STEPS). The march's energy does
+      // not depend on the step in expectation (1-exp(-d*ext*step) per step),
+      // so a refined pixel still converges to its half-res neighbour's
+      // value; only the noise it averages away is finer.
+      float slabStep=(t1-t0)/float(PRIMARY_STEPS);
       occupancyNarrow(uv,t0,t1);
-      MarchResult r=marchClouds(eye,dir,t0,t1,baseStep,jitter,mu,airMass,skyBehind);
+      float baseStep=occupancySpanStep(slabStep,t0,t1);
+      MarchResult r=marchClouds(eye,dir,t0,t1,baseStep,slabStep/baseStep,jitter,mu,airMass,skyBehind);
       vec3 scattered=r.scattered;float transmittance=r.transmittance;
       #ifdef CLOUD_CIRRUS
         if(transmittance>0.02){

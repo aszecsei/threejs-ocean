@@ -39,10 +39,36 @@
         t0=max(t0,o.x*MAX_DIST);t1=min(t1,o.y*MAX_DIST);
       #endif
     }
-    // baseStep comes from the caller, sized on the un-narrowed slab: the
-    // narrowing then only shortens the loop, it never changes the sampling
-    // rate (so ?cloud-occupancy=0 is a pixel-exact A/B for prepass misses).
-    MarchResult marchClouds(vec3 eye,vec3 dir,float t0,float t1,float baseStep,float jitter,float mu,float airMass,vec3 skyBehind){
+    // Step size for a narrowed [t0,t1] (OCCUPANCY_SPAN_STEPS): the iterations
+    // the prepass freed buy finer sampling on exactly the rays with cloud in
+    // them. Never coarser than slabStep, never finer than the span's own
+    // PRIMARY_STEPS stride or OCCUPANCY_MIN_STEP (a short span must not turn
+    // into 160 sub-unit strides; below the floor the loop still breaks on
+    // t>t1). The span is constant per 8x8 tile, so the step is quantised to
+    // slabStep/2^k: neighbouring tiles then share a step or differ by exactly
+    // 2x, and since the jitter is scaled by fineStep their sample sets nest
+    // (mip-level reasoning) instead of the tile grid showing as a change in
+    // noise character. The ratio is capped at 2^OCCUPANCY_MAX_RATIO_LOG2;
+    // beyond 4x the resolve's 3x3 clamp cannot hide the difference. Returns
+    // slabStep when compiled out, so callers need no #ifdef.
+    float occupancySpanStep(float slabStep,float t0,float t1){
+      #if defined(CLOUD_OCCUPANCY) && defined(OCCUPANCY_SPAN_STEPS)
+        if(t1<=t0)return slabStep;
+        float spanStep=max((t1-t0)/float(PRIMARY_STEPS),OCCUPANCY_MIN_STEP);
+        float k=clamp(floor(log2(slabStep/spanStep)),0.0,OCCUPANCY_MAX_RATIO_LOG2);
+        return slabStep*exp2(-k);
+      #else
+        return slabStep;
+      #endif
+    }
+    // baseStep comes from the caller. The dome sizes it on the un-narrowed
+    // slab, so the narrowing only shortens its loop and never changes its
+    // sampling rate (?cloud-occupancy=0 is then a pixel-exact A/B for prepass
+    // misses); the refinement pass sizes it on the span via
+    // occupancySpanStep. stepRatio is slabStep/baseStep (1 when unscaled):
+    // it stretches the light-march reuse cadence so that finer primary steps
+    // do not multiply the light marches along with them.
+    MarchResult marchClouds(vec3 eye,vec3 dir,float t0,float t1,float baseStep,float stepRatio,float jitter,float mu,float airMass,vec3 skyBehind){
       vec3 sd=normalize(uSunDirection);
       if(t1<=t0)return MarchResult(vec3(0.0),1.0,0.0,0.0,0.0,0.0,0.0);
       // Coarse stride capped at 1.4x: at 2x a far coarse step could leap
@@ -52,6 +78,10 @@
       float tStart=t0+jitter*fineStep,t=tStart;bool fine=false;int emptyRun=0;
       vec3 scattered=vec3(0);float transmittance=1.0,distanceSum=0.0,motionWeight=0.0,densitySum=0.0;
       float debugValue=0.0,debugWeight=0.0,cachedOd=0.0,cachedOd0=0.0,cachedCoarse=0.0;vec3 cachedAmbient=vec3(0),cachedBounce=vec3(0);int odAge=99,ambientAge=99;
+      // Light-march and coarse-ambient reuse cadence in samples: 2 at the
+      // slab step, scaled with the step ratio so the light marches (and
+      // coarse fetches) per world unit stay constant when the step shrinks.
+      int odCadence=int(clamp(2.0*stepRatio,2.0,8.0));
       vec3 shadowTintBase=desat(mix(uZenithColor,uHorizonColor,0.62),0.30)*0.42;
       for(int i=0;i<PRIMARY_STEPS;i++){
         if(t>t1||transmittance<0.02)break;vec3 p=eye+dir*t;float stepScale=1.0+t*FAR_STEP_GROWTH;
@@ -72,7 +102,7 @@
         distanceSum+=contribution*t;motionWeight+=contribution;densitySum+=contribution*d;
         if(uMaskMode>0.5){transmittance*=exp(-sampleExt);t+=stepLen;continue;}
         #ifdef LIGHT_REUSE
-          if(odAge>=2){cachedOd=lightOpticalDepth(p,transmittance<0.3?LIGHT_STEPS/2:LIGHT_STEPS,cachedOd0);odAge=0;}odAge++;float od=cachedOd,od0=cachedOd0;
+          if(odAge>=odCadence){cachedOd=lightOpticalDepth(p,transmittance<0.3?LIGHT_STEPS/2:LIGHT_STEPS,cachedOd0);odAge=0;}odAge++;float od=cachedOd,od0=cachedOd0;
         #else
           float od0;float od=lightOpticalDepth(p,LIGHT_STEPS,od0);
         #endif
@@ -110,7 +140,7 @@
           sun+=min(rim,RIM_CLAMP);
         #endif
         #ifdef CLOUD_AMBIENT_COARSE
-          if(ambientAge>=2){cachedAmbient=coarseAmbient(p,cloudPoint,cachedCoarse,cachedBounce);ambientAge=0;}ambientAge++;vec3 ambient=cachedAmbient;
+          if(ambientAge>=odCadence){cachedAmbient=coarseAmbient(p,cloudPoint,cachedCoarse,cachedBounce);ambientAge=0;}ambientAge++;vec3 ambient=cachedAmbient;
         #else
           float hf=cloudPoint.height;vec3 ambient=desat(mix(uHorizonColor,uZenithColor,hf),0.35)*0.9+vec3(0.12)+vec3(0.30)*hf+vec3(0.42,0.50,0.62)*(1.0-hf);cachedCoarse=d;
         #endif

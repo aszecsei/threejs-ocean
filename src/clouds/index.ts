@@ -31,6 +31,10 @@ export function cloudResDivisor() {
   return n >= 0 ? Math.min(n, 8) : 2;
 }
 export function cloudLightReuse() { return flags.enabled("cloud-light"); }
+// Span-scaled march steps in the refinement pass (?cloud-span-steps=0 falls
+// back to the slab step there too): a ray the occupancy prepass narrowed
+// marches its span at up to 4x the slab's sampling rate.
+export function cloudSpanSteps() { return flags.enabled("cloud-span-steps"); }
 export function cloudFarGrowth() { return flags.num("cloud-far", 1, { min: 0 }); }
 // Mid-frequency shape band (?cloud-midband=0 disables, or a 0-2 strength
 // multiplier). Fills the feature-size gap between the base billows and the
@@ -189,6 +193,14 @@ export function* buildClouds(
     // Shade collapse rate of the ambient term; pushing it up darkens a
     // shadowed near edge against a lit far mass (layer separation).
     SHADE_FALLOFF: "0.9",
+    // Span-scaled steps (march.core.glsl, occupancySpanStep). Only the
+    // refinement pass calls it so far: its history is simple and it marches
+    // only edge pixels, where finer sampling shows. The dome feeds the
+    // temporal resolve, whose prefilter is tuned to the current noise
+    // floor; calling it there means re-tuning preNoise/boxNoise. The floor
+    // (3 world units) bounds the cost of a short span; the ratio cap keeps
+    // neighbouring tiles' noise character within what the resolve hides.
+    ...(occupancy && cloudSpanSteps() ? { OCCUPANCY_SPAN_STEPS: "", OCCUPANCY_MIN_STEP: len(0.05), OCCUPANCY_MAX_RATIO_LOG2: "2.0" } : {}),
     // Wisp band: view-shader only. The shadow map compiles densityDefines and
     // must never pay for it; the coarse path ignores it anyway. The shell
     // width and fade range are emitted unconditionally because wispness

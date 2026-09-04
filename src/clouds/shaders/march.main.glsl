@@ -61,7 +61,7 @@
         }
       #endif
       occupancyNarrow(screenUv,t0,t1);
-      MarchResult r=marchClouds(eye,dir,t0,t1,baseStep,jitter,mu,airMass,skyBehind);
+      MarchResult r=marchClouds(eye,dir,t0,t1,baseStep,1.0,jitter,mu,airMass,skyBehind);
       vec3 scattered=r.scattered;float transmittance=r.transmittance,distanceSum=r.distanceSum,motionWeight=r.motionWeight,densitySum=r.densitySum,debugValue=r.debugValue;
       // The cirrus layer sits behind and above everything the march covered,
       // so its lit color is attenuated by the remaining transmittance and it
@@ -141,4 +141,4 @@
       #elif defined(TAA_ENABLED)
         taaMotion=vec4(velocity,previousNdc.z*0.5+0.5,alpha);
       #endif
-    }
+    }

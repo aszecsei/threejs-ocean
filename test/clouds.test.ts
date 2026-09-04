@@ -33,6 +33,25 @@ describe("edge refinement shader", () => {
     expect(MARCH_CORE).toContain("for(int i=0;i<PRIMARY_STEPS;i++)");
   });
 
+  it("scales the refinement step to the occupied span, and the dome's to the slab", () => {
+    // The dome's step must stay slab-sized: ?cloud-occupancy=0 is a
+    // pixel-exact A/B for prepass misses only while the sampling rate does
+    // not depend on the narrowing. The refinement pass is where the freed
+    // iterations are spent, behind a define the flag can compile out.
+    expect(REFINE_FRAG).toContain("occupancySpanStep(slabStep,t0,t1)");
+    expect(REFINE_FRAG).toContain("slabStep/baseStep");
+    expect(MARCH_MAIN).not.toContain("occupancySpanStep(");
+    expect(MARCH_MAIN).toContain("baseStep,1.0,");
+    const helper = MARCH_CORE.slice(MARCH_CORE.indexOf("float occupancySpanStep("));
+    const gate = helper.indexOf("#if defined(CLOUD_OCCUPANCY) && defined(OCCUPANCY_SPAN_STEPS)");
+    expect(gate).toBeGreaterThan(-1);
+    expect(gate).toBeLessThan(helper.indexOf("OCCUPANCY_MIN_STEP"));
+    // Finer primary steps must not multiply the light marches: the reuse
+    // cadence scales with the step ratio.
+    expect(MARCH_CORE).toContain("if(odAge>=odCadence)");
+    expect(MARCH_CORE).toMatch(/int odCadence=int\(clamp\(2\.0\*stepRatio/);
+  });
+
   it("keeps the wisp band out of the coarse density path", () => {
     // The shadow map and the occupancy prepass compile density.glsl without
     // CLOUD_WISP; the wisp block must be gated so they never pay for it.

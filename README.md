@@ -129,6 +129,7 @@ Everything diagnostic is a URL query parameter, read fresh on every call.
 | `?cloud-rim=0\|<k>` | Disable or scale the silver-lining rim term (and its fine-LOD first light step) |
 | `?cloud-occupancy=0` | Skip the tile occupancy prepass; every ray marches the whole slab again |
 | `?cloud-refine=0` | Skip the full-res edge refinement; the composite reads the half-res image |
+| `?cloud-span-steps=0` | Size the refinement march's step on the whole slab instead of the tile's occupied span |
 | `?rays=0\|<k>\|debug` | Disable, scale, or inspect the god-ray mask |
 | `?loading=0\|debug` | Skip the loading screen, warm-up and reveal / print the per-step cost table |
 | `?loading-hold=1` | Hold the finished loading screen up until `__demo.loading.finish()` |
