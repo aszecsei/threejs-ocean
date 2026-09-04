@@ -56,6 +56,20 @@ export function int(
   return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
 }
 
+/**
+ * A strength multiplier for an effect that is on by default: absent means
+ * `fallback`, a bare `?flag` (or `=true`) means full strength, an unparseable
+ * value means off (unlike {@link num}, which would silently keep the default),
+ * and anything numeric clamps to [0, max].
+ */
+export function strength(name: string, fallback = 1, max = 2): number {
+  const q = params().get(name);
+  if (q === null) return fallback;
+  if (q === "" || q === "true") return 1;
+  const n = Number(q);
+  return Number.isFinite(n) ? Math.max(0, Math.min(max, n)) : 0;
+}
+
 /** One of a fixed set of string modes; `fallback` for anything else. */
 export function oneOf<T extends string>(
   name: string,

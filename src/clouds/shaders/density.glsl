@@ -103,9 +103,12 @@
     float tower;
     float baseNoise;
     float detailNoise;
+    // 1 at the thin outer shell of an edge, 0 inside the mass. Lighting uses
+    // it to place the silver lining; always computed, wisps or not.
+    float wispness;
   };
 
-  vec3 cloudNoiseCoordinates(vec3 p, float tower, float height, out vec3 detailQ) {
+  vec3 cloudNoiseCoordinates(vec3 p, float tower, float height, out vec3 detailQ, out vec3 wispQ) {
     vec3 q = p * NOISE_SCALE;
     vec2 wind = uTime * WIND_SPEED * WIND_DIR;
     detailQ = (q + vec3(wind.x,0.0,wind.y))*EROSION_SCALE;
@@ -120,6 +123,17 @@
     // share so they streak instead of staying perfectly round.
     vec3 curl = texture(tCloudCurlNoise, q.xz*0.35).rgb*2.0-1.0;
     detailQ += curl*CURL_STRENGTH*(1.0-0.55*height);
+    #ifdef CLOUD_WISP
+      // Wisp domain: ~3x the finest erosion band, read from the same detail
+      // volume (a smaller bake would give the same voxels per Worley cell,
+      // so it buys nothing). Swizzled and offset so it does not correlate
+      // with the bands it is drawn from; stronger curl and a fixed vertical
+      // squash so it carves horizontal filaments rather than pebbles.
+      wispQ = detailQ.zxy*WISP_SCALE + vec3(0.29,0.61,0.13) + curl*(CURL_STRENGTH*WISP_CURL);
+      wispQ.y *= WISP_SQUASH;
+    #else
+      wispQ = detailQ;
+    #endif
     // Vertically compressed detail domain near the base: erosion then carves
     // horizontally stretched laminae (wisps) instead of round Worley blobs.
     detailQ.y *= mix(1.7, 1.05, height);
@@ -157,8 +171,10 @@
   // detailFade in [0,1] LODs the erosion: 1 = full edge detail, 0 = none.
   // Distant samples cannot resolve the erosion frequency and dissolve into
   // speckle, so the marcher fades it out with distance.
-  CloudSample sampleCloudDensityLod(vec3 p, const int octaves, const bool erode, float detailFade) {
-    CloudSample s = CloudSample(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0);
+  // wispFade LODs the wisp band the same way; its cells are ~4 units across,
+  // so it has to leave much earlier than the erosion does.
+  CloudSample sampleCloudDensityLod(vec3 p, const int octaves, const bool erode, float detailFade, float wispFade) {
+    CloudSample s = CloudSample(0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0);
     if (p.y < CLOUD_BOTTOM || p.y > CB_TOP) return s;
     vec2 shearedXZ = p.xz + WIND_DIR*(ANVIL_SHEAR*(p.y-CLOUD_BOTTOM));
     CloudWeather weather = cloudWeather(shearedXZ);
@@ -177,8 +193,8 @@
       s.profile=mix(cu,cb,s.tower);
     #endif
     if (s.profile<=0.0) return s;
-    vec3 detailQ;
-    vec3 q=cloudNoiseCoordinates(vec3(shearedXZ.x,p.y,shearedXZ.y),s.tower,s.height,detailQ);
+    vec3 detailQ, wispQ;
+    vec3 q=cloudNoiseCoordinates(vec3(shearedXZ.x,p.y,shearedXZ.y),s.tower,s.height,detailQ,wispQ);
     s.baseNoise=cloudBaseSignal(q,octaves,erode);
     #ifdef CLOUD_MID_BAND
       // Experimental band filling the ~50-80 unit gap between base billows
@@ -206,18 +222,48 @@
     // Widen the threshold band as detail fades with distance: far features
     // are subpixel, and a hard edge there dissolves into binary crumbs.
     float shapeWidth=SHAPE_WIDTH*mix(2.4,1.0,detailFade);
+    // The occupancy prepass samples on fixed coarse strata and must bound,
+    // not estimate: it lowers every threshold by a margin so a clump that
+    // only the jittered fine march would touch still registers here.
+    #ifdef CLOUD_OCCUPANCY_MAP
+      float thresholdMargin=OCCUPANCY_MARGIN;
+    #else
+      float thresholdMargin=0.0;
+    #endif
     float envelope=1.0;
     #ifdef CLOUD_PROFILE_DIMENSIONAL
       float anvilHeight=smoothstep(0.70,0.80,s.height);
       float anvilExponent=mix(1.0,mix(1.0,0.5,ANVIL_BIAS),anvilHeight*s.tower);
       float shapedCoverage=pow(max(s.coverage,1e-4),anvilExponent);
       float dimensionalProfile=clamp(s.profile*shapedCoverage,0.0,1.0);
-      float d0=smoothstep(1.0-dimensionalProfile,1.0-dimensionalProfile+shapeWidth,s.baseNoise);
+      float d0=smoothstep(1.0-dimensionalProfile-thresholdMargin,1.0-dimensionalProfile+shapeWidth,s.baseNoise);
       envelope=dimensionalProfile;
     #else
       float threshold=COVERAGE-(weather.rawCoverage-0.5)*0.25-s.tower*0.18
         -s.tower*ANVIL_SPREAD*smoothstep(0.62,0.9,s.height);
-      float d0=smoothstep(threshold,threshold+shapeWidth,s.baseNoise)*s.profile;
+      float d0=smoothstep(threshold-thresholdMargin,threshold+shapeWidth,s.baseNoise)*s.profile;
+    #endif
+    // The thin shell is where all the high-frequency edge character lives;
+    // interiors (d0 >= WISP_SHELL) and every coarse caller pay one smoothstep.
+    float shell=1.0-smoothstep(0.0,WISP_SHELL,d0);
+    #ifdef CLOUD_WISP
+      if (erode && wispFade>0.0 && d0>0.0 && shell>0.0) {
+        #ifdef CLOUD_NOISE_TEXTURE
+          float wispN=dot(texture(tCloudDetailNoise,wispQ).rgb,vec3(0.25,0.35,0.40));
+        #else
+          float wispN=cloudWorleyFbm(wispQ*3.0);
+        #endif
+        // Perturbs the shape signal itself, ahead of the erosion, so the
+        // wisp pattern decides where the erosion bites: high values survive
+        // it as tendrils and detached crumbs, low values open gaps. A second
+        // remap after the erosion cannot do this -- by then the erosion has
+        // emptied most of the shell and there is nothing left to carve.
+        // The gate on d0>0 keeps every addition inside the coarse envelope,
+        // so the shadow map and the occupancy prepass still bound it.
+        float k=WISP_STRENGTH*wispFade*shell;
+        float delta=(wispN-0.45)*k;
+        d0=clamp(d0+delta*(delta>0.0?WISP_PUFF:1.0),0.0,1.0);
+      }
     #endif
     float d1=d0;
     if (erode && d0>0.0) {
@@ -232,11 +278,14 @@
       float e=EROSION*detailFade*hfm*(1.0-d0*0.65);
       d1=clamp(cloudRemap(d0,e,1.0,0.0,1.0),0.0,1.0);
     }
+    // Thin after erosion as well as near the surface: what the rim term
+    // should light is the translucent fringe, not a dense sliver.
+    s.wispness=shell*(1.0-0.5*d1);
     d1=pow(d1,DENSITY_SHAPE);
     s.density=d1*mix(CUMULUS_GAIN,TOWER_GAIN,s.tower);
     return s;
   }
   CloudSample sampleCloudDensity(vec3 p, const int octaves, const bool erode) {
-    return sampleCloudDensityLod(p, octaves, erode, 1.0);
+    return sampleCloudDensityLod(p, octaves, erode, 1.0, 1.0);
   }
   float coarseCloudDensity(vec3 p) { return sampleCloudDensity(p,2,false).density; }

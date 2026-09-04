@@ -59,6 +59,9 @@ export default async function dumpShaders() {
 
   if (d.clouds) {
     collect(out, "clouds:dome", d.clouds.mesh.material);
+    collect(out, "clouds:occupancy", d.clouds.pass?.occupancy?.material);
+    collect(out, "clouds:refine", d.clouds.pass?.refine?.material);
+    collect(out, "clouds:refineResolve", d.clouds.pass?.refine?.resolveMaterial);
     const raw = d.clouds.pass?.rawTarget;
     if (raw) out["clouds:pass.rawTargetCount"] = String(raw.textures?.length ?? 1);
   }

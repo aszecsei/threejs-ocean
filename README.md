@@ -31,6 +31,8 @@ src/
   clouds/                 raymarched cloud dome
     temporal/             reprojection and blur of the cloud buffer
     shadows/              top-down cloud shadow map
+    occupancy/            per-tile occupied-span prepass the marches narrow to
+    refine/               full-res re-march of edge pixels over the half-res image
   ocean/                  displaced surface, SSR, foam
     fft/                  the wave simulation (spectrum, butterfly, cascades)
     underwater/           the water body: medium, mask, resolve, caustics
@@ -121,8 +123,12 @@ Everything diagnostic is a URL query parameter, read fresh on every call.
 | `?ssr=0\|full` | Disable SSR, or march every ray instead of gating on the knot |
 | `?clouds=0` `?cirrus=0` | Drop the cloud dome / the cirrus layer |
 | `?cloud-res=<n>` | Offscreen cloud divisor; `0` renders the dome in-scene |
-| `?cloud-debug=<mode>` | Cloud debug views (`coverage`, `shadow`, `history`, …) |
+| `?cloud-debug=<mode>` | Cloud debug views (`coverage`, `shadow`, `history`, `occupancy`, `edge-mask`, `refined`, …) |
 | `?cloud-temporal=0\|interleaved` | Cloud reprojection mode |
+| `?cloud-wisp=0\|<k>` | Disable or scale the high-frequency wisp erosion on cloud edges |
+| `?cloud-rim=0\|<k>` | Disable or scale the silver-lining rim term (and its fine-LOD first light step) |
+| `?cloud-occupancy=0` | Skip the tile occupancy prepass; every ray marches the whole slab again |
+| `?cloud-refine=0` | Skip the full-res edge refinement; the composite reads the half-res image |
 | `?rays=0\|<k>\|debug` | Disable, scale, or inspect the god-ray mask |
 | `?loading=0\|debug` | Skip the loading screen, warm-up and reveal / print the per-step cost table |
 | `?loading-hold=1` | Hold the finished loading screen up until `__demo.loading.finish()` |
@@ -172,3 +178,6 @@ Two other probes live in `scripts/`:
   still find their targets. Run it after any three.js upgrade.
 - `dump-shaders.js` — hashes the composed source of every material, so a
   shader refactor can be proven byte-identical rather than eyeballed.
+- `measure-frame-time.js` — times a burst of fixed-step frames with a
+  `gl.finish()` at the end. Only comparable at one window size and `?dpr=`;
+  use it to rank flag sets (`?cloud-refine=0` vs on), not to quote costs.
